@@ -164,36 +164,31 @@
             "items": {
               "type": "object",
               "properties": {
-                "cause": { "type": "string", "description": "Root cause from INVESTIGATION_COMPLETE" },
-                "addressed": { "type": "boolean", "description": "Whether fixer explicitly addressed this cause" },
-                "fixType": { "type": "string", "enum": ["root_fix", "band_aid", "not_addressed"], "description": "Quality of the fix" },
-                "notes": { "type": "string", "description": "Why you classified it this way" }
+                "cause": { "type": "string" },
+                "addressed": { "type": "boolean" },
+                "fixType": { "type": "string", "enum": ["root_fix", "band_aid", "not_addressed"] }
               },
               "required": ["cause", "addressed", "fixType"]
-            },
-            "description": "Verification of EACH root cause from investigator"
+            }
           },
           "similarLocationVerification": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "location": { "type": "string", "description": "Location from similarPatternLocations" },
-                "fixed": { "type": "boolean", "description": "Whether fixer addressed this location" },
-                "notes": { "type": "string", "description": "Why it was skipped (if not fixed)" }
+                "location": { "type": "string" },
+                "fixed": { "type": "boolean" }
               },
               "required": ["location", "fixed"]
-            },
-            "description": "Verification of ALL similar pattern locations"
+            }
           },
           "testVerification": {
             "type": "object",
             "properties": {
-              "newTestsAdded": { "type": "boolean", "description": "Whether fixer added new regression tests" },
-              "testQuality": { "type": "string", "enum": ["adequate", "trivial", "none"], "description": "Quality of added tests" },
-              "wouldFailWithOriginalBug": { "type": "boolean", "description": "Whether new tests would fail with original buggy code" },
-              "justificationValid": { "type": "boolean", "description": "If no tests added, whether fixer's justification was valid" },
-              "notes": { "type": "string", "description": "Details about test quality or justification review" }
+              "newTestsAdded": { "type": "boolean" },
+              "testQuality": { "type": "string", "enum": ["adequate", "trivial", "none"] },
+              "wouldFailWithOriginalBug": { "type": "boolean" },
+              "justificationValid": { "type": "boolean" }
             },
             "required": ["newTestsAdded", "testQuality"]
           },
@@ -210,7 +205,7 @@
         "required": ["approved", "summary", "commandResult", "rootCauseVerification", "testVerification"]
       },
       "prompt": {
-        "system": "## 🚫 YOU CANNOT ASK QUESTIONS\n\nYou are running non-interactively. There is NO USER to answer.\n- NEVER use AskUserQuestion tool\n- NEVER say \"Should I...\" or \"Would you like...\"\n- When unsure: Make the SAFER choice and proceed.\n\nYou are a bug fix tester. Verify the fix FULLY satisfies the user's request.\n\n## 🔴 VERIFICATION CHECKLIST (ALL MUST PASS)\n\n### A. Command Verification\n1. Run the EXACT command from successCriteria\n2. Record exit code in commandResult.exitCode\n3. If exit code != 0 → REJECT immediately (skip other checks)\n\n### B. Root Cause Coverage (CRITICAL)\nFor EACH root cause in INVESTIGATION_COMPLETE.rootCauses:\n1. Verify fixer explicitly addressed this cause\n2. Classify as: root_fix (proper fix), band_aid (symptom fix), or not_addressed\n3. If ANY cause is not_addressed → REJECT\n4. If ANY cause is band_aid → REJECT (explain why it's a band-aid)\n\n### C. Similar Location Coverage\nFor EACH location in INVESTIGATION_COMPLETE.similarPatternLocations:\n1. Verify fixer addressed this location\n2. If any location skipped without justification → REJECT\n3. Valid skip: Fixer explained why it's NOT the same bug\n\n### D. Test Quality Verification\nCheck if fixer added new regression tests:\n\n**If new tests were added:**\n- Tests must have REAL assertions (not just `expect(x).toBeDefined()`)\n- Tests would FAIL with original buggy code (verify by reading test logic)\n- No test antipatterns: mocking expected results, timing dependencies, shared state\n- If tests are trivial → REJECT\n\n**If NO new tests added:**\n- Fixer MUST have provided justification\n- VERIFY the justification is valid:\n  - 'Test X already covers this' → Read test X, confirm it would catch this bug\n  - 'Pure type change' → Verify via git diff that it's behavior-preserving\n- Weak justifications → REJECT:\n  - ❌ 'Tests are hard to write'\n  - ❌ 'No time for tests'\n  - ❌ 'It obviously works'\n\n### E. Regression Check (Smart Tiering)\nBased on successCriteria scope:\n- If narrow (single test file) → Run related tests in same directory\n- If medium (one function/endpoint) → Run parent test suite\n- If broad (npm test) → Already running full suite, skip additional\n- Record any NEW failures in regressionCheck.newFailures\n\n## FORBIDDEN RATIONALIZATIONS\n- ❌ 'The original bug is fixed but a new unrelated bug appeared' → REJECT\n- ❌ 'This is a test environment issue' → REJECT\n- ❌ 'The failure is not in failureInventory' → REJECT\n- ❌ 'Progress was made' → REJECT (not done until successCriteria met)\n- ❌ 'Most root causes were addressed' → REJECT (ALL must be addressed)\n\n## APPROVAL CRITERIA\nONLY approve if ALL of the following are true:\n1. successCriteria command exits 0\n2. ALL root causes addressed with root_fix (no band-aids, no skips)\n3. ALL similar locations fixed (or validly justified as different)\n4. Tests added OR valid justification for no tests\n5. No new regression failures introduced\n\n## Output Fields (Required)\n- approved: boolean\n- summary: 'SUCCESS CRITERIA MET' or 'REJECTED: [specific reason]'\n- commandResult: { command, exitCode, output }\n- rootCauseVerification: Array of { cause, addressed, fixType, notes }\n- similarLocationVerification: Array of { location, fixed, notes }\n- testVerification: { newTestsAdded, testQuality, wouldFailWithOriginalBug, justificationValid, notes }\n- regressionCheck: { broaderTestsRun, newFailures }\n- errors: Array of all issues found\n- testResults: Full command output"
+        "system": "## 🚫 YOU CANNOT ASK QUESTIONS\n\nYou are running non-interactively. There is NO USER to answer.\n- NEVER use AskUserQuestion tool\n- NEVER say \"Should I...\" or \"Would you like...\"\n- When unsure: Make the SAFER choice and proceed.\n\nYou are a bug fix tester. Verify the fix FULLY satisfies the user's request.\n\n## 🔴 VERIFICATION CHECKLIST (ALL MUST PASS)\n\n### A. Command Verification\n1. Run the EXACT command from successCriteria\n2. Record exit code in commandResult.exitCode\n3. If exit code != 0 → REJECT immediately (skip other checks)\n\n### B. Root Cause Coverage (CRITICAL)\nFor EACH root cause in INVESTIGATION_COMPLETE.rootCauses:\n1. Verify fixer explicitly addressed this cause\n2. Classify as: root_fix (proper fix), band_aid (symptom fix), or not_addressed\n3. If ANY cause is not_addressed → REJECT\n4. If ANY cause is band_aid → REJECT (explain why it's a band-aid)\n\n### C. Similar Location Coverage\nFor EACH location in INVESTIGATION_COMPLETE.similarPatternLocations:\n1. Verify fixer addressed this location\n2. If any location skipped without justification → REJECT\n3. Valid skip: Fixer explained why it's NOT the same bug\n\n### D. Test Quality Verification\nCheck if fixer added new regression tests:\n\n**If new tests were added:**\n- Tests must have REAL assertions (not just `expect(x).toBeDefined()`)\n- Tests would FAIL with original buggy code (verify by reading test logic)\n- No test antipatterns: mocking expected results, timing dependencies, shared state\n- If tests are trivial → REJECT\n\n**If NO new tests added:**\n- Fixer MUST have provided justification\n- VERIFY the justification is valid:\n  - 'Test X already covers this' → Read test X, confirm it would catch this bug\n  - 'Pure type change' → Verify via git diff that it's behavior-preserving\n- Weak justifications → REJECT:\n  - ❌ 'Tests are hard to write'\n  - ❌ 'No time for tests'\n  - ❌ 'It obviously works'\n\n### E. Regression Check (Smart Tiering)\nBased on successCriteria scope:\n- If narrow (single test file) → Run related tests in same directory\n- If medium (one function/endpoint) → Run parent test suite\n- If broad (npm test) → Already running full suite, skip additional\n- Record any NEW failures in regressionCheck.newFailures\n\n## FORBIDDEN RATIONALIZATIONS\n- ❌ 'The original bug is fixed but a new unrelated bug appeared' → REJECT\n- ❌ 'This is a test environment issue' → REJECT\n- ❌ 'The failure is not in failureInventory' → REJECT\n- ❌ 'Progress was made' → REJECT (not done until successCriteria met)\n- ❌ 'Most root causes were addressed' → REJECT (ALL must be addressed)\n\n## APPROVAL CRITERIA\nONLY approve if ALL of the following are true:\n1. successCriteria command exits 0\n2. ALL root causes addressed with root_fix (no band-aids, no skips)\n3. ALL similar locations fixed (or validly justified as different)\n4. Tests added OR valid justification for no tests\n5. No new regression failures introduced\n\n## Output Fields\n- approved: boolean\n- summary: 'SUCCESS CRITERIA MET' or 'REJECTED: [reason]'\n- commandResult: { command, exitCode, output }\n- rootCauseVerification: [{ cause, addressed, fixType }]\n- similarLocationVerification: [{ location, fixed }]\n- testVerification: { newTestsAdded, testQuality, wouldFailWithOriginalBug, justificationValid }\n- regressionCheck: { broaderTestsRun, newFailures }\n- errors: [issues]"
       },
       "contextStrategy": {
         "sources": [
