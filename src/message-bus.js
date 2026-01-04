@@ -52,6 +52,11 @@ class MessageBus extends EventEmitter {
 
     const published = this.ledger.append(message);
 
+    // If ledger is closed, append returns null - skip emission
+    if (!published) {
+      return null;
+    }
+
     // Emit to topic-specific listeners
     this.emit(`topic:${message.topic}`, published);
 

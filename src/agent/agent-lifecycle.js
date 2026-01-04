@@ -59,9 +59,11 @@ function start(agent) {
 
 /**
  * Stop the agent
+ * Waits for any in-flight execution to complete before returning.
  * @param {AgentWrapper} agent - Agent instance
+ * @returns {Promise<void>}
  */
-function stop(agent) {
+async function stop(agent) {
   if (!agent.running) {
     return;
   }
@@ -77,6 +79,20 @@ function stop(agent) {
   // Kill current task if any
   if (agent.currentTask) {
     agent._killTask();
+  }
+
+  // Wait for in-flight execution to complete (up to 5 seconds)
+  // This prevents write-after-close race conditions
+  if (agent._currentExecution) {
+    try {
+      await Promise.race([
+        agent._currentExecution,
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch {
+      // Ignore errors from cancelled execution
+    }
+    agent._currentExecution = null;
   }
 
   agent._log(`Agent ${agent.id} stopped`);
@@ -133,7 +149,17 @@ async function handleMessage(agent, message) {
   }
 
   // Execute trigger action (lifecycle event published inside for execute_task)
-  await executeTriggerAction(agent, matchingTrigger, message);
+  // Track execution so stop() can wait for it
+  const executionPromise = executeTriggerAction(agent, matchingTrigger, message);
+  agent._currentExecution = executionPromise;
+  try {
+    await executionPromise;
+  } finally {
+    // Clear only if this is still our execution (not replaced by another)
+    if (agent._currentExecution === executionPromise) {
+      agent._currentExecution = null;
+    }
+  }
 }
 
 /**
@@ -175,12 +201,22 @@ async function executeTriggerAction(agent, trigger, message) {
  * @param {Object} triggeringMessage - Message that triggered execution
  */
 async function executeTask(agent, triggeringMessage) {
+  // Early exit if agent was stopped
+  if (!agent.running) {
+    return;
+  }
+
   // Default: no retries (maxRetries=1 means 1 attempt only)
   // Set agent config `maxRetries: 3` to enable exponential backoff retries
   const maxRetries = agent.config.maxRetries ?? 1;
   const baseDelay = 2000; // 2 seconds
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // Check if agent was stopped between retries
+    if (!agent.running) {
+      return;
+    }
+
     try {
       // Execute onStart hook
       await executeHook({

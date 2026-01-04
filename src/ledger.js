@@ -18,6 +18,7 @@ class Ledger extends EventEmitter {
     this.db = new Database(dbPath);
     this.cache = new Map(); // LRU cache for queries
     this.cacheLimit = 1000;
+    this._closed = false; // Track closed state to prevent write-after-close
     this._initSchema();
   }
 
@@ -74,6 +75,13 @@ class Ledger extends EventEmitter {
    * @returns {Object} The appended message with generated ID
    */
   append(message) {
+    // Guard against write-after-close race condition
+    // This can happen when orchestrator closes ledger while agents are still publishing
+    if (this._closed) {
+      // Silent return - agent is being stopped, message loss is expected
+      return null;
+    }
+
     const id = message.id || `msg_${crypto.randomBytes(16).toString('hex')}`;
     const timestamp = message.timestamp || Date.now();
 
@@ -130,6 +138,11 @@ class Ledger extends EventEmitter {
    */
   batchAppend(messages) {
     if (!Array.isArray(messages) || messages.length === 0) {
+      return [];
+    }
+
+    // Guard against write-after-close race condition
+    if (this._closed) {
       return [];
     }
 
@@ -563,6 +576,7 @@ class Ledger extends EventEmitter {
    * Close the database connection
    */
   close() {
+    this._closed = true; // Set flag BEFORE closing to prevent race conditions
     this.db.close();
   }
 
