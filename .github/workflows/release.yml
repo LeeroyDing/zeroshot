@@ -30,8 +30,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
           ref: main
+          # NOTE: Do NOT set persist-credentials: false here
+          # Semantic-release needs git credentials to query remote tags
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
