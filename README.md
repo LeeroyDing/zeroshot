@@ -350,6 +350,8 @@ Full isolation in a fresh container. Your workspace stays untouched. Good for ri
 | Running multiple tasks in parallel | `--docker` |
 | Full automation, no review needed | `--ship` |
 
+**Safety note:** Without isolation, agents are automatically forbidden from git operations (commit, push, PR). The git-pusher agent handles commits after validators approve.
+
 <details>
 <summary><strong>Docker Credential Mounts</strong></summary>
 

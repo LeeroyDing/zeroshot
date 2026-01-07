@@ -2861,6 +2861,13 @@ function formatSettingsList(settings, showUsage = false) {
     console.log(chalk.dim('  zeroshot settings get <key>'));
     console.log(chalk.dim('  zeroshot settings reset'));
     console.log('');
+    console.log(chalk.dim('Examples:'));
+    console.log(chalk.dim('  zeroshot settings set maxModel opus'));
+    console.log(chalk.dim('  zeroshot settings set dockerMounts \'["gh","git","ssh","aws"]\''));
+    console.log(chalk.dim('  zeroshot settings set dockerEnvPassthrough \'["AWS_*","TF_VAR_*"]\''));
+    console.log('');
+    console.log(chalk.dim('Available mount presets: gh, git, ssh, aws, azure, kube, terraform, gcloud'));
+    console.log('');
   }
 }
 
