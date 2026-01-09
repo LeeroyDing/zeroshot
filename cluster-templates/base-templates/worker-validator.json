@@ -4,16 +4,30 @@
   "params": {
     "worker_model": {
       "type": "string",
-      "enum": ["haiku", "sonnet", "opus"],
+      "enum": [
+        "haiku",
+        "sonnet",
+        "opus"
+      ],
       "default": "sonnet"
     },
     "validator_model": {
       "type": "string",
-      "enum": ["haiku", "sonnet", "opus"],
+      "enum": [
+        "haiku",
+        "sonnet",
+        "opus"
+      ],
       "default": "sonnet"
     },
-    "max_iterations": { "type": "number", "default": 3 },
-    "max_tokens": { "type": "number", "default": 100000 },
+    "max_iterations": {
+      "type": "number",
+      "default": 3
+    },
+    "max_tokens": {
+      "type": "number",
+      "default": 100000
+    },
     "timeout": {
       "type": "number",
       "default": 0,
@@ -21,7 +35,11 @@
     },
     "task_type": {
       "type": "string",
-      "enum": ["INQUIRY", "TASK", "DEBUG"],
+      "enum": [
+        "INQUIRY",
+        "TASK",
+        "DEBUG"
+      ],
       "description": "Type of work"
     }
   },
@@ -36,14 +54,24 @@
       },
       "contextStrategy": {
         "sources": [
-          { "topic": "ISSUE_OPENED", "limit": 1 },
-          { "topic": "VALIDATION_RESULT", "since": "last_task_end", "limit": 3 }
+          {
+            "topic": "ISSUE_OPENED",
+            "limit": 1
+          },
+          {
+            "topic": "VALIDATION_RESULT",
+            "since": "last_task_end",
+            "limit": 3
+          }
         ],
         "format": "chronological",
         "maxTokens": "{{max_tokens}}"
       },
       "triggers": [
-        { "topic": "ISSUE_OPENED", "action": "execute_task" },
+        {
+          "topic": "ISSUE_OPENED",
+          "action": "execute_task"
+        },
         {
           "topic": "VALIDATION_RESULT",
           "logic": {
@@ -85,24 +113,41 @@
           },
           "errors": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Issues found (empty if approved)"
           }
         },
-        "required": ["approved", "summary", "errors"]
+        "required": [
+          "approved",
+          "summary",
+          "errors"
+        ]
       },
       "prompt": {
         "system": "## 🚫 YOU CANNOT ASK QUESTIONS\n\nYou are running non-interactively. There is NO USER to answer.\n- NEVER use AskUserQuestion tool\n- NEVER say \"Should I...\" or \"Would you like...\"\n- When unsure: Make the SAFER choice and proceed.\n\nYou are a validator for a SIMPLE {{task_type}} task.\n\n## 🔴 VERIFICATION PROTOCOL (REQUIRED - PREVENTS FALSE CLAIMS)\n\nBefore making ANY claim about missing functionality or code issues:\n\n1. **SEARCH FIRST** - Use Glob to find ALL relevant files\n2. **READ THE CODE** - Use Read to inspect actual implementation\n3. **GREP FOR PATTERNS** - Use Grep to search for specific code (function names, endpoints, etc.)\n\n**NEVER claim something doesn't exist without FIRST searching for it.**\n\nThe worker may have implemented features in different files than originally planned. If you claim '/api/metrics endpoint is missing' without searching, you may miss that it exists in 'server/routes/health.ts' instead of 'server/routes/api.ts'.\n\n### Example Verification Flow:\n```\n1. Claim: 'Missing error handling for network failures'\n2. BEFORE claiming → Grep for 'catch', 'error', 'try' in relevant files\n3. BEFORE claiming → Read the actual implementation\n4. ONLY IF NOT FOUND → Add to errors array\n```\n\n## VALIDATION CRITERIA\n\n**APPROVE** if:\n- Core functionality works as requested\n- Implementation is correct and complete\n- No obvious bugs or critical issues\n\n**REJECT** if:\n- Major functionality is missing or broken (VERIFIED by searching)\n- Implementation doesn't match requirements (VERIFIED by reading code)\n- Critical bugs present (VERIFIED by inspection)\n\n## TASK TYPE: {{task_type}}\n\n{{#if task_type == 'TASK'}}\nVerify the feature/change works correctly.\n{{/if}}\n\n{{#if task_type == 'DEBUG'}}\nVerify the bug is actually fixed at root cause.\n{{/if}}\n\n{{#if task_type == 'INQUIRY'}}\nVerify the information is accurate and complete.\n{{/if}}\n\nFor SIMPLE tasks, don't nitpick. Focus on: Does it work and meet requirements?"
       },
       "contextStrategy": {
         "sources": [
-          { "topic": "ISSUE_OPENED", "limit": 1 },
-          { "topic": "IMPLEMENTATION_READY", "limit": 1 }
+          {
+            "topic": "ISSUE_OPENED",
+            "limit": 1
+          },
+          {
+            "topic": "IMPLEMENTATION_READY",
+            "limit": 1
+          }
         ],
         "format": "chronological",
         "maxTokens": "{{max_tokens}}"
       },
-      "triggers": [{ "topic": "IMPLEMENTATION_READY", "action": "execute_task" }],
+      "triggers": [
+        {
+          "topic": "IMPLEMENTATION_READY",
+          "action": "execute_task"
+        }
+      ],
       "hooks": {
         "onComplete": {
           "action": "publish_message",
@@ -118,22 +163,6 @@
           }
         }
       }
-    },
-    {
-      "id": "completion-detector",
-      "role": "orchestrator",
-      "model": "haiku",
-      "timeout": 0,
-      "triggers": [
-        {
-          "topic": "VALIDATION_RESULT",
-          "logic": {
-            "engine": "javascript",
-            "script": "const lastPush = ledger.findLast({ topic: 'IMPLEMENTATION_READY' });\nif (!lastPush) return false;\nconst result = ledger.findLast({ topic: 'VALIDATION_RESULT', since: lastPush.timestamp });\nreturn result?.content?.data?.approved === true || result?.content?.data?.approved === 'true';"
-          },
-          "action": "stop_cluster"
-        }
-      ]
     }
   ]
 }

@@ -1908,6 +1908,71 @@ Continue from where you left off. Review your previous output to understand what
     await this._opAddAgents(cluster, { agents: loadedConfig.agents }, context);
 
     this._log(`    ✓ Config loaded (${loadedConfig.agents.length} agents)`);
+
+    // Inject completion agent (templates don't include one - orchestrator controls termination)
+    await this._injectCompletionAgent(cluster, context);
+  }
+
+  /**
+   * Inject appropriate completion agent based on mode
+   * Templates define work, orchestrator controls termination strategy
+   * @private
+   */
+  async _injectCompletionAgent(cluster, context) {
+    // Skip if completion agent already exists
+    const hasCompletionAgent = cluster.agents.some(
+      (a) => a.config?.id === 'completion-detector' || a.config?.id === 'git-pusher'
+    );
+    if (hasCompletionAgent) {
+      return;
+    }
+
+    const isPrMode = process.env.ZEROSHOT_PR === '1';
+
+    if (isPrMode) {
+      // Load git-pusher for PR mode
+      const gitPusherPath = path.join(__dirname, 'agents', 'git-pusher-agent.json');
+      const gitPusherConfig = JSON.parse(fs.readFileSync(gitPusherPath, 'utf8'));
+
+      // Get issue context from ledger
+      const issueMsg = cluster.messageBus.ledger.findLast({ topic: 'ISSUE_OPENED' });
+      const issueNumber = issueMsg?.content?.data?.number || 'unknown';
+      const issueTitle = issueMsg?.content?.data?.title || 'Implementation';
+
+      // Inject placeholders
+      gitPusherConfig.prompt = gitPusherConfig.prompt
+        .replace(/\{\{issue_number\}\}/g, issueNumber)
+        .replace(/\{\{issue_title\}\}/g, issueTitle);
+
+      await this._opAddAgents(cluster, { agents: [gitPusherConfig] }, context);
+      this._log(`    [--pr mode] Injected git-pusher agent`);
+    } else {
+      // Default completion-detector
+      const completionDetector = {
+        id: 'completion-detector',
+        role: 'orchestrator',
+        model: 'haiku',
+        timeout: 0,
+        triggers: [
+          {
+            topic: 'VALIDATION_RESULT',
+            logic: {
+              engine: 'javascript',
+              script: `const validators = cluster.getAgentsByRole('validator');
+const lastPush = ledger.findLast({ topic: 'IMPLEMENTATION_READY' });
+if (!lastPush) return false;
+if (validators.length === 0) return true;
+const result = ledger.findLast({ topic: 'VALIDATION_RESULT', since: lastPush.timestamp });
+return result?.content?.data?.approved === true || result?.content?.data?.approved === 'true';`,
+            },
+            action: 'stop_cluster',
+          },
+        ],
+      };
+
+      await this._opAddAgents(cluster, { agents: [completionDetector] }, context);
+      this._log(`    Injected completion-detector agent`);
+    }
   }
 
   /**
