@@ -155,7 +155,7 @@ class Ledger extends EventEmitter {
         const message = msgs[i];
         const id = message.id || `msg_${crypto.randomBytes(16).toString('hex')}`;
         // Use incrementing timestamps to preserve order within batch
-        const timestamp = message.timestamp || (baseTimestamp + i);
+        const timestamp = message.timestamp || baseTimestamp + i;
 
         const record = {
           id,
@@ -213,7 +213,7 @@ class Ledger extends EventEmitter {
    * @returns {Array} Matching messages
    */
   query(criteria) {
-    const { cluster_id, topic, sender, receiver, since, until, limit, offset } = criteria;
+    const { cluster_id, topic, sender, receiver, since, until, limit, offset, order } = criteria;
 
     if (!cluster_id) {
       throw new Error('cluster_id is required for queries');
@@ -248,7 +248,8 @@ class Ledger extends EventEmitter {
       params.push(typeof until === 'number' ? until : new Date(until).getTime());
     }
 
-    let sql = `SELECT * FROM messages WHERE ${conditions.join(' AND ')} ORDER BY timestamp ASC`;
+    const direction = String(order || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+    let sql = `SELECT * FROM messages WHERE ${conditions.join(' AND ')} ORDER BY timestamp ${direction}`;
 
     if (limit) {
       sql += ` LIMIT ?`;

@@ -138,7 +138,9 @@ class Orchestrator {
         // Skip clusters whose .db file doesn't exist (orphaned registry entries)
         const dbPath = path.join(this.storageDir, `${clusterId}.db`);
         if (!fs.existsSync(dbPath)) {
-          console.warn(`[Orchestrator] Cluster ${clusterId} has no database file, removing from registry`);
+          console.warn(
+            `[Orchestrator] Cluster ${clusterId} has no database file, removing from registry`
+          );
           clustersToRemove.push(clusterId);
           continue;
         }
@@ -152,8 +154,12 @@ class Orchestrator {
           const messageCount = cluster.messageBus.count({ cluster_id: clusterId });
           if (messageCount === 0) {
             console.warn(`[Orchestrator] ⚠️  Cluster ${clusterId} has 0 messages (corrupted)`);
-            console.warn(`[Orchestrator]    This likely occurred from SIGINT during initialization.`);
-            console.warn(`[Orchestrator]    Marking as 'corrupted' - use 'zeroshot kill ${clusterId}' to remove.`);
+            console.warn(
+              `[Orchestrator]    This likely occurred from SIGINT during initialization.`
+            );
+            console.warn(
+              `[Orchestrator]    Marking as 'corrupted' - use 'zeroshot kill ${clusterId}' to remove.`
+            );
             corruptedClusters.push(clusterId);
             // Mark cluster as corrupted for visibility in status/list commands
             cluster.state = 'corrupted';
@@ -168,12 +174,16 @@ class Orchestrator {
           delete data[clusterId];
         }
         fs.writeFileSync(clustersFile, JSON.stringify(data, null, 2));
-        this._log(`[Orchestrator] Removed ${clustersToRemove.length} orphaned cluster(s) from registry`);
+        this._log(
+          `[Orchestrator] Removed ${clustersToRemove.length} orphaned cluster(s) from registry`
+        );
       }
 
       // Log summary of corrupted clusters
       if (corruptedClusters.length > 0) {
-        console.warn(`\n[Orchestrator] ⚠️  Found ${corruptedClusters.length} corrupted cluster(s):`);
+        console.warn(
+          `\n[Orchestrator] ⚠️  Found ${corruptedClusters.length} corrupted cluster(s):`
+        );
         for (const clusterId of corruptedClusters) {
           console.warn(`    - ${clusterId}`);
         }
@@ -689,7 +699,9 @@ class Orchestrator {
       }
 
       // Inject workers instruction if --workers explicitly provided and > 1
-      const workersCount = process.env.ZEROSHOT_WORKERS ? parseInt(process.env.ZEROSHOT_WORKERS) : 0;
+      const workersCount = process.env.ZEROSHOT_WORKERS
+        ? parseInt(process.env.ZEROSHOT_WORKERS)
+        : 0;
       if (workersCount > 1) {
         const workerAgent = config.agents.find((a) => a.id === 'worker');
         if (workerAgent) {
@@ -859,9 +871,13 @@ class Orchestrator {
         const event = message.content?.data?.event;
         // Save on key state transitions that affect status display
         if (
-          ['TASK_STARTED', 'TASK_COMPLETED', 'PROCESS_SPAWNED', 'TASK_ID_ASSIGNED', 'STARTED'].includes(
-            event
-          )
+          [
+            'TASK_STARTED',
+            'TASK_COMPLETED',
+            'PROCESS_SPAWNED',
+            'TASK_ID_ASSIGNED',
+            'STARTED',
+          ].includes(event)
         ) {
           this._saveClusters();
         }
@@ -879,7 +895,9 @@ class Orchestrator {
           `⚠️  Orchestrator: Agent ${agentId} appears stale (${Math.round(timeSinceLastOutput / 1000)}s no output) but will NOT be killed`
         );
         this._log(`    Analysis: ${analysis}`);
-        this._log(`    Manual intervention may be needed - use 'zeroshot resume ${clusterId}' if stuck`);
+        this._log(
+          `    Manual intervention may be needed - use 'zeroshot resume ${clusterId}' if stuck`
+        );
       });
 
       // Watch for CLUSTER_OPERATIONS - dynamic agent spawn/removal/update
@@ -1043,7 +1061,9 @@ class Orchestrator {
     // Clean up isolation container if enabled
     // CRITICAL: Preserve workspace for resume capability - only delete on kill()
     if (cluster.isolation?.manager) {
-      this._log(`[Orchestrator] Stopping isolation container for ${clusterId} (preserving workspace for resume)...`);
+      this._log(
+        `[Orchestrator] Stopping isolation container for ${clusterId} (preserving workspace for resume)...`
+      );
       await cluster.isolation.manager.cleanup(clusterId, { preserveWorkspace: true });
       this._log(`[Orchestrator] Container stopped, workspace preserved`);
     }
@@ -1083,7 +1103,9 @@ class Orchestrator {
 
     // Force remove isolation container AND workspace (full cleanup, no resume)
     if (cluster.isolation?.manager) {
-      this._log(`[Orchestrator] Force removing isolation container and workspace for ${clusterId}...`);
+      this._log(
+        `[Orchestrator] Force removing isolation container and workspace for ${clusterId}...`
+      );
       await cluster.isolation.manager.cleanup(clusterId, { preserveWorkspace: false });
       this._log(`[Orchestrator] Container and workspace removed`);
     }
@@ -1187,6 +1209,7 @@ class Orchestrator {
         cluster_id: clusterId,
         topic: 'AGENT_ERROR',
         limit: 10,
+        order: 'desc',
       });
 
       if (errors.length > 0) {
@@ -1223,7 +1246,9 @@ class Orchestrator {
         // The isolated workspace at /tmp/zeroshot-isolated/{clusterId} was preserved by stop()
         const workDir = cluster.isolation.workDir;
         if (!workDir) {
-          throw new Error(`Cannot resume cluster ${clusterId}: workDir not saved in isolation state`);
+          throw new Error(
+            `Cannot resume cluster ${clusterId}: workDir not saved in isolation state`
+          );
         }
 
         // Check if isolated workspace still exists (it should, if stop() was used)
@@ -1283,10 +1308,13 @@ class Orchestrator {
     }
 
     // Query recent messages from ledger to provide context
-    const recentMessages = cluster.messageBus.query({
-      cluster_id: clusterId,
-      limit: 50,
-    });
+    const recentMessages = cluster.messageBus
+      .query({
+        cluster_id: clusterId,
+        limit: 50,
+        order: 'desc',
+      })
+      .reverse();
 
     // CASE 1: Failed cluster - Resume the failed agent with error context
     if (failureInfo) {
@@ -1508,10 +1536,13 @@ Continue from where you left off. Review your previous output to understand what
 `.trim();
 
     // Get recent context from ledger
-    const recentMessages = cluster.messageBus.query({
-      cluster_id: cluster.id,
-      limit: 10,
-    });
+    const recentMessages = cluster.messageBus
+      .query({
+        cluster_id: cluster.id,
+        limit: 10,
+        order: 'desc',
+      })
+      .reverse();
 
     const contextText = recentMessages
       .map((m) => `[${m.sender}] ${m.content?.text || JSON.stringify(m.content)}`)
@@ -1962,8 +1993,25 @@ Continue from where you left off. Review your previous output to understand what
 const lastPush = ledger.findLast({ topic: 'IMPLEMENTATION_READY' });
 if (!lastPush) return false;
 if (validators.length === 0) return true;
-const result = ledger.findLast({ topic: 'VALIDATION_RESULT', since: lastPush.timestamp });
-return result?.content?.data?.approved === true || result?.content?.data?.approved === 'true';`,
+
+const validatorIds = new Set(validators.map((v) => v.id));
+const results = ledger.query({ topic: 'VALIDATION_RESULT', since: lastPush.timestamp });
+
+const latestByValidator = new Map();
+for (const msg of results) {
+  if (!validatorIds.has(msg.sender)) continue;
+  latestByValidator.set(msg.sender, msg);
+}
+
+if (latestByValidator.size < validators.length) return false;
+
+for (const validator of validators) {
+  const msg = latestByValidator.get(validator.id);
+  const approved = msg?.content?.data?.approved;
+  if (!(approved === true || approved === 'true')) return false;
+}
+
+return true;`,
             },
             action: 'stop_cluster',
           },
