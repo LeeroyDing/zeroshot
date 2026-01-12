@@ -58,8 +58,8 @@ class BaseProvider {
    * @param {Object} _options - Call options
    * @returns {Promise<{success: boolean, text: string, usage?: Object, error?: string}>}
    */
-  async callSDK(_prompt, _options) {
-    throw new Error(`${this.name}: SDK not implemented. Use CLI instead.`);
+  callSDK(_prompt, _options) {
+    return Promise.reject(new Error(`${this.name}: SDK not implemented. Use CLI instead.`));
   }
 
   /**
@@ -70,8 +70,8 @@ class BaseProvider {
    * @param {Object} _options - Call options
    * @returns {Promise<{success: boolean, text: string, usage?: Object, error?: string}>}
    */
-  async callSimple(_prompt, _options = {}) {
-    throw new Error(`${this.name}: SDK not implemented. Use CLI instead.`);
+  callSimple(_prompt, _options = {}) {
+    return Promise.reject(new Error(`${this.name}: SDK not implemented. Use CLI instead.`));
   }
 
   isAvailable() {

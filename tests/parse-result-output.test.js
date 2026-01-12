@@ -204,29 +204,26 @@ Done.`;
     const agent = createMockAgent({ provider: 'anthropic' });
 
     it('should throw on empty output', async function () {
-      await assert.rejects(
-        async () => parseResultOutput(agent, ''),
-        /Task execution failed/
-      );
+      await assert.rejects(() => parseResultOutput(agent, ''), /Task execution failed/);
     });
 
     it('should throw on "Task not found" output', async function () {
       await assert.rejects(
-        async () => parseResultOutput(agent, 'Task not found'),
+        () => parseResultOutput(agent, 'Task not found'),
         /Task execution failed/
       );
     });
 
     it('should throw on "Process terminated" output', async function () {
       await assert.rejects(
-        async () => parseResultOutput(agent, 'Process terminated by signal'),
+        () => parseResultOutput(agent, 'Process terminated by signal'),
         /Task execution failed/
       );
     });
 
     it('should throw when no JSON can be extracted', async function () {
       await assert.rejects(
-        async () => parseResultOutput(agent, 'Just some plain text with no JSON'),
+        () => parseResultOutput(agent, 'Just some plain text with no JSON'),
         /output missing required JSON block/
       );
     });
@@ -299,10 +296,7 @@ Done.`;
       // Missing required 'score' field
       const output = `{"wrongField":"value"}`;
 
-      await assert.rejects(
-        async () => parseResultOutput(agent, output),
-        /failed JSON schema validation/
-      );
+      await assert.rejects(() => parseResultOutput(agent, output), /failed JSON schema validation/);
     });
 
     it('should warn but not throw for non-validator role with invalid schema', async function () {
@@ -322,7 +316,7 @@ Done.`;
       // Output with wrong type for 'complexity' (number instead of string)
       // But since the schema has string type and we're passing a valid string,
       // let's test with missing required field instead
-      const output = `{"complexity":"SIMPLE"}`;  // Missing taskType and reasoning
+      const output = `{"complexity":"SIMPLE"}`; // Missing taskType and reasoning
 
       // Should NOT throw, but should publish warning
       const result = await parseResultOutput(agent, output);

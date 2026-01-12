@@ -12,8 +12,6 @@
  * 2. The reformatOutput() function will then work automatically
  */
 
-const { extractJsonFromOutput } = require('./output-extraction');
-
 const DEFAULT_MAX_ATTEMPTS = 3;
 
 /**
@@ -74,12 +72,20 @@ Fix this issue in your response.`;
  * @returns {Promise<Object>} The reformatted JSON object
  * @throws {Error} Always throws - SDK not implemented
  */
-async function reformatOutput({ rawOutput, schema, providerName, maxAttempts = DEFAULT_MAX_ATTEMPTS, onAttempt }) {
+function reformatOutput({
+  rawOutput,
+  schema: _schema,
+  providerName,
+  maxAttempts: _maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  onAttempt: _onAttempt,
+}) {
   // SDK not implemented - reformatting not available
   // When SDK support is added, uncomment the implementation below
-  throw new Error(
-    `Output reformatting not available: SDK not implemented for provider "${providerName}". ` +
-    `Agent output must be valid JSON. Raw output (last 200 chars): ${(rawOutput || '').slice(-200)}`
+  return Promise.reject(
+    new Error(
+      `Output reformatting not available: SDK not implemented for provider "${providerName}". ` +
+        `Agent output must be valid JSON. Raw output (last 200 chars): ${(rawOutput || '').slice(-200)}`
+    )
   );
 
   // FUTURE: When SDK support is added to providers, uncomment this:

@@ -127,7 +127,7 @@ describe('Output Reformatter', function () {
 
     it('should throw SDK not implemented error', async function () {
       await assert.rejects(
-        async () =>
+        () =>
           reformatOutput({
             rawOutput: 'Some text',
             schema: { type: 'object', properties: { x: { type: 'number' } } },
@@ -139,7 +139,7 @@ describe('Output Reformatter', function () {
 
     it('should include provider name in error', async function () {
       await assert.rejects(
-        async () =>
+        () =>
           reformatOutput({
             rawOutput: 'Some text',
             schema: { type: 'object' },
@@ -151,7 +151,7 @@ describe('Output Reformatter', function () {
 
     it('should include raw output snippet in error', async function () {
       await assert.rejects(
-        async () =>
+        () =>
           reformatOutput({
             rawOutput: 'This is the raw output text',
             schema: { type: 'object' },

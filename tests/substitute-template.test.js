@@ -9,13 +9,13 @@
 const assert = require('assert');
 const { substituteTemplate } = require('../src/agent/agent-hook-executor');
 
-// Mock agent for testing (returns Promise to match async _parseResultOutput)
+// Mock agent for testing
 const createMockAgent = (overrides = {}) => ({
   id: 'test-agent',
   role: 'implementation',
   iteration: 1,
   cluster_id: 'test-cluster',
-  _parseResultOutput: async (output) => {
+  _parseResultOutput: (output) => {
     // Extract JSON block from output
     const match = output.match(/```json\s*([\s\S]*?)\s*```/);
     if (match) {
@@ -218,7 +218,7 @@ describe('substituteTemplate', () => {
 
       // Should throw because {{result.plan}} is a KNOWN pattern but no result provided
       await assert.rejects(
-        async () =>
+        () =>
           substituteTemplate({
             config,
             context,
@@ -233,7 +233,7 @@ describe('substituteTemplate', () => {
   describe('edge cases', () => {
     it('should handle empty config', async () => {
       await assert.rejects(
-        async () =>
+        () =>
           substituteTemplate({
             config: null,
             context: {},

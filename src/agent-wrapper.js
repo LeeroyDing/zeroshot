@@ -493,7 +493,7 @@ class AgentWrapper {
    * Falls back to reformatting if extraction fails
    * @private
    */
-  async _parseResultOutput(output) {
+  _parseResultOutput(output) {
     return parseResultOutput(this, output);
   }
 
