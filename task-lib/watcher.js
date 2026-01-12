@@ -101,7 +101,7 @@ child.stderr.on('data', (data) => {
   }
 });
 
-child.on('close', (code, signal) => {
+child.on('close', async (code, signal) => {
   const timestamp = Date.now();
 
   if (stdoutBuffer.trim()) {
@@ -161,16 +161,24 @@ child.on('close', (code, signal) => {
 
   const resolvedCode = recovered?.payload ? 0 : code;
   const status = resolvedCode === 0 ? 'completed' : 'failed';
-  updateTask(taskId, {
-    status,
-    exitCode: resolvedCode,
-    error: resolvedCode === 0 ? null : signal ? `Killed by ${signal}` : null,
-  });
+  try {
+    await updateTask(taskId, {
+      status,
+      exitCode: resolvedCode,
+      error: resolvedCode === 0 ? null : signal ? `Killed by ${signal}` : null,
+    });
+  } catch (updateError) {
+    log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
+  }
   process.exit(0);
 });
 
-child.on('error', (err) => {
+child.on('error', async (err) => {
   log(`\nError: ${err.message}\n`);
-  updateTask(taskId, { status: 'failed', error: err.message });
+  try {
+    await updateTask(taskId, { status: 'failed', error: err.message });
+  } catch (updateError) {
+    log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
+  }
   process.exit(1);
 });

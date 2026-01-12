@@ -151,7 +151,7 @@ server.on('output', (data) => {
   }
 });
 
-server.on('exit', ({ exitCode, signal }) => {
+server.on('exit', async ({ exitCode, signal }) => {
   const timestamp = Date.now();
   const code = exitCode;
 
@@ -208,21 +208,29 @@ server.on('exit', ({ exitCode, signal }) => {
 
   const resolvedCode = recovered?.payload ? 0 : code;
   const status = resolvedCode === 0 ? 'completed' : 'failed';
-  updateTask(taskId, {
-    status,
-    exitCode: resolvedCode,
-    error: resolvedCode === 0 ? null : signal ? `Killed by ${signal}` : null,
-    socketPath: null,
-  });
+  try {
+    await updateTask(taskId, {
+      status,
+      exitCode: resolvedCode,
+      error: resolvedCode === 0 ? null : signal ? `Killed by ${signal}` : null,
+      socketPath: null,
+    });
+  } catch (updateError) {
+    log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
+  }
 
   setTimeout(() => {
     process.exit(0);
   }, 500);
 });
 
-server.on('error', (err) => {
+server.on('error', async (err) => {
   log(`\nError: ${err.message}\n`);
-  updateTask(taskId, { status: 'failed', error: err.message });
+  try {
+    await updateTask(taskId, { status: 'failed', error: err.message });
+  } catch (updateError) {
+    log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
+  }
   process.exit(1);
 });
 

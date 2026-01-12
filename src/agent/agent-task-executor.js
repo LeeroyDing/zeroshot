@@ -791,7 +791,14 @@ function followClaudeTaskLogs(agent, taskId) {
             // Look for structured_output in accumulated output - indicates success
             const hasStructuredOutput = /"structured_output"\s*:/.test(output);
             const hasSuccessResult = /"subtype"\s*:\s*"success"/.test(output);
-            success = hasStructuredOutput || hasSuccessResult;
+            let hasParsedOutput = false;
+            try {
+              const { extractJsonFromOutput } = require('./output-extraction');
+              hasParsedOutput = !!extractJsonFromOutput(output, providerName);
+            } catch {
+              // Ignore extraction errors - fallback to other signals
+            }
+            success = hasStructuredOutput || hasSuccessResult || hasParsedOutput;
             if (!agent.quiet) {
               agent._log(
                 `[Agent ${agent.id}] Task ${taskId} is stale - recovered as ${success ? 'SUCCESS' : 'FAILURE'} based on output analysis`
