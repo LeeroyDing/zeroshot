@@ -1,5 +1,7 @@
 # zeroshot CLI
 
+> **🎉 New Release:** Now supports **Codex** and **Gemini** CLI in addition to Claude! Use any provider or mix them in multi-agent workflows. See [Providers](#providers) for details.
+
 <!-- install-placeholder -->
 <p align="center">
   <code>npm install -g @covibes/zeroshot</code>
