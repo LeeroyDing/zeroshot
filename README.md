@@ -379,7 +379,7 @@ zeroshot settings set dockerEnvPassthrough '["MY_API_KEY", "TF_VAR_*"]'
 | Cluster stuck                 | `zeroshot resume <id>` to continue                        |
 | Agent keeps failing           | Check `zeroshot logs <id>` for actual error               |
 | `zeroshot: command not found` | `npm install -g @covibes/zeroshot`                        |
-| Prompts need optimization     | Run `/analyze-cluster-postmortem <id>` in Claude Code     |
+| Agents misbehave              | Run `/analyze-cluster-postmortem <id>` in Claude Code     |
 
 </details>
 
