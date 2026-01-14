@@ -4412,6 +4412,136 @@ const FILTERED_PATTERNS = [
   /\{\{[a-z.]+\}\}/,
 ];
 
+// Handle AGENT_OUTPUT messages (streaming events from agent task execution)
+function formatAgentOutput(msg, prefix) {
+  const content = msg.content?.data?.line || msg.content?.data?.chunk || msg.content?.text;
+  if (!content || !content.trim()) return;
+
+  const provider = normalizeProviderName(
+    msg.content?.data?.provider || msg.sender_provider || 'claude'
+  );
+  const events = parseProviderChunk(provider, content);
+
+  for (const event of events) {
+    switch (event.type) {
+      case 'text':
+        accumulateText(prefix, msg.sender, event.text);
+        break;
+      case 'thinking':
+      case 'thinking_start':
+        if (event.text) {
+          accumulateThinking(prefix, msg.sender, event.text);
+        } else if (event.type === 'thinking_start') {
+          safePrint(`${prefix} ${chalk.dim.italic('💭 thinking...')}`);
+        }
+        break;
+      case 'tool_start':
+        flushLineBuffer(prefix, msg.sender);
+        break;
+      case 'tool_call':
+        flushLineBuffer(prefix, msg.sender);
+        const icon = getToolIcon(event.toolName);
+        const toolDesc = formatToolCall(event.toolName, event.input);
+        safePrint(`${prefix} ${icon} ${chalk.cyan(event.toolName)} ${chalk.dim(toolDesc)}`);
+        currentToolCall.set(msg.sender, {
+          toolName: event.toolName,
+          input: event.input,
+        });
+        break;
+      case 'tool_input':
+        break;
+      case 'tool_result': {
+        const status = event.isError ? chalk.red('✗') : chalk.green('✓');
+        const toolCall = currentToolCall.get(msg.sender);
+        const resultDesc = formatToolResult(
+          event.content,
+          event.isError,
+          toolCall?.toolName,
+          toolCall?.input
+        );
+        safePrint(`${prefix}   ${status} ${resultDesc}`);
+        currentToolCall.delete(msg.sender);
+        break;
+      }
+      case 'result':
+        flushLineBuffer(prefix, msg.sender);
+        if (!event.success) {
+          safePrint(`${prefix} ${chalk.bold.red('✗ Error:')} ${event.error || 'Task failed'}`);
+        }
+        break;
+      case 'block_end':
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (events.length === 0) {
+    const lines = content.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      let shouldSkip = false;
+      for (const pattern of FILTERED_PATTERNS) {
+        if (pattern.test(trimmed)) {
+          shouldSkip = true;
+          break;
+        }
+      }
+      if (shouldSkip) continue;
+
+      if (
+        (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+        (trimmed.startsWith('[') && trimmed.endsWith(']'))
+      )
+        continue;
+
+      if (isDuplicate(trimmed)) continue;
+
+      safePrint(`${prefix} ${line}`);
+    }
+  }
+}
+
+// Handle AGENT_ERROR in normal mode
+function formatAgentErrorMessage(msg, prefix, timestamp) {
+  safePrint('');
+  safePrint(chalk.bold.red(`${'─'.repeat(60)}`));
+  safePrint(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.red('🔴 AGENT ERROR')}`);
+  if (msg.content?.text) {
+    safePrint(`${prefix} ${chalk.red(msg.content.text)}`);
+  }
+  if (msg.content?.data?.stack) {
+    const stackLines = msg.content.data.stack.split('\n').slice(0, 5);
+    for (const line of stackLines) {
+      if (line.trim()) {
+        safePrint(`${prefix} ${chalk.dim(line)}`);
+      }
+    }
+  }
+  safePrint(chalk.bold.red(`${'─'.repeat(60)}`));
+}
+
+// Handle ISSUE_OPENED in normal mode
+function formatIssueOpenedMessage(msg, prefix, timestamp) {
+  if (shownNewTaskForCluster.has(msg.cluster_id)) return;
+  shownNewTaskForCluster.add(msg.cluster_id);
+
+  safePrint('');
+  safePrint(chalk.bold.blue(`${'─'.repeat(60)}`));
+  safePrint(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.blue('📋 NEW TASK')}`);
+  if (msg.content?.text) {
+    const lines = msg.content.text.split('\n').slice(0, 3);
+    for (const line of lines) {
+      if (line.trim() && line.trim() !== '# Manual Input') {
+        safePrint(`${prefix} ${chalk.white(line)}`);
+      }
+    }
+  }
+  safePrint(chalk.bold.blue(`${'─'.repeat(60)}`));
+}
+
 // Helper function to print a message (docker-compose style with colors)
 function printMessage(msg, showClusterId = false, watchMode = false, isActive = true) {
   // Build prefix using utility function
@@ -4469,166 +4599,19 @@ function printMessage(msg, showClusterId = false, watchMode = false, isActive = 
     return;
   }
 
-  // AGENT_OUTPUT: handle separately (complex streaming logic - kept in main file due to dependencies)
+  // Delegate to extracted handlers for complex topics
   if (msg.topic === 'AGENT_OUTPUT') {
-    // Support both old 'chunk' and new 'line' formats
-    const content = msg.content?.data?.line || msg.content?.data?.chunk || msg.content?.text;
-    if (!content || !content.trim()) return;
-
-    // Parse streaming JSON events using the parser
-    const provider = normalizeProviderName(
-      msg.content?.data?.provider || msg.sender_provider || 'claude'
-    );
-    const events = parseProviderChunk(provider, content);
-
-    for (const event of events) {
-      switch (event.type) {
-        case 'text':
-          // Accumulate text, print complete lines
-          accumulateText(prefix, msg.sender, event.text);
-          break;
-
-        case 'thinking':
-        case 'thinking_start':
-          // Accumulate thinking, print complete lines
-          if (event.text) {
-            accumulateThinking(prefix, msg.sender, event.text);
-          } else if (event.type === 'thinking_start') {
-            safePrint(`${prefix} ${chalk.dim.italic('💭 thinking...')}`);
-          }
-          break;
-
-        case 'tool_start':
-          // Flush pending text before tool - don't print, tool_call has details
-          flushLineBuffer(prefix, msg.sender);
-          break;
-
-        case 'tool_call':
-          // Flush pending text before tool
-          flushLineBuffer(prefix, msg.sender);
-          const icon = getToolIcon(event.toolName);
-          const toolDesc = formatToolCall(event.toolName, event.input);
-          safePrint(`${prefix} ${icon} ${chalk.cyan(event.toolName)} ${chalk.dim(toolDesc)}`);
-          // Store tool call info for matching with result
-          currentToolCall.set(msg.sender, {
-            toolName: event.toolName,
-            input: event.input,
-          });
-          break;
-
-        case 'tool_input':
-          // Streaming tool input JSON - skip (shown in tool_call)
-          break;
-
-        case 'tool_result':
-          const status = event.isError ? chalk.red('✗') : chalk.green('✓');
-          // Get stored tool call info for better formatting
-          const toolCall = currentToolCall.get(msg.sender);
-          const resultDesc = formatToolResult(
-            event.content,
-            event.isError,
-            toolCall?.toolName,
-            toolCall?.input
-          );
-          safePrint(`${prefix}   ${status} ${resultDesc}`);
-          // Clear stored tool call after result
-          currentToolCall.delete(msg.sender);
-          break;
-
-        case 'result':
-          // Flush remaining buffer before result
-          flushLineBuffer(prefix, msg.sender);
-          // Final result - only show errors (success text already streamed)
-          if (!event.success) {
-            safePrint(`${prefix} ${chalk.bold.red('✗ Error:')} ${event.error || 'Task failed'}`);
-          }
-          break;
-
-        case 'block_end':
-          // Block ended - skip
-          break;
-
-        default:
-          // Unknown event type - skip
-          break;
-      }
-    }
-
-    // If no JSON events parsed, fall through to text filtering
-    if (events.length === 0) {
-      const lines = content.split('\n');
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-
-        // Check against filtered patterns
-        let shouldSkip = false;
-        for (const pattern of FILTERED_PATTERNS) {
-          if (pattern.test(trimmed)) {
-            shouldSkip = true;
-            break;
-          }
-        }
-        if (shouldSkip) continue;
-
-        // Skip JSON-like content
-        if (
-          (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-          (trimmed.startsWith('[') && trimmed.endsWith(']'))
-        )
-          continue;
-
-        // Skip duplicate content
-        if (isDuplicate(trimmed)) continue;
-
-        safePrint(`${prefix} ${line}`);
-      }
-    }
+    formatAgentOutput(msg, prefix);
     return;
   }
 
-  // AGENT_ERROR: Show errors with visual prominence
   if (msg.topic === 'AGENT_ERROR') {
-    safePrint(''); // Blank line before error
-    safePrint(chalk.bold.red(`${'─'.repeat(60)}`));
-    safePrint(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.red('🔴 AGENT ERROR')}`);
-    if (msg.content?.text) {
-      safePrint(`${prefix} ${chalk.red(msg.content.text)}`);
-    }
-    if (msg.content?.data?.stack) {
-      // Show first 5 lines of stack trace
-      const stackLines = msg.content.data.stack.split('\n').slice(0, 5);
-      for (const line of stackLines) {
-        if (line.trim()) {
-          safePrint(`${prefix} ${chalk.dim(line)}`);
-        }
-      }
-    }
-    safePrint(chalk.bold.red(`${'─'.repeat(60)}`));
+    formatAgentErrorMessage(msg, prefix, timestamp);
     return;
   }
 
-  // ISSUE_OPENED: Show as task header with visual separation
-  // Skip duplicate - conductor re-publishes after spawning agents (same task, confusing UX)
   if (msg.topic === 'ISSUE_OPENED') {
-    if (shownNewTaskForCluster.has(msg.cluster_id)) {
-      return; // Already shown NEW TASK for this cluster
-    }
-    shownNewTaskForCluster.add(msg.cluster_id);
-
-    safePrint(''); // Blank line before new task
-    safePrint(chalk.bold.blue(`${'─'.repeat(60)}`));
-    safePrint(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.blue('📋 NEW TASK')}`);
-    if (msg.content?.text) {
-      // Show task description (first 3 lines max)
-      const lines = msg.content.text.split('\n').slice(0, 3);
-      for (const line of lines) {
-        if (line.trim() && line.trim() !== '# Manual Input') {
-          safePrint(`${prefix} ${chalk.white(line)}`);
-        }
-      }
-    }
-    safePrint(chalk.bold.blue(`${'─'.repeat(60)}`));
+    formatIssueOpenedMessage(msg, prefix, timestamp);
     return;
   }
 
