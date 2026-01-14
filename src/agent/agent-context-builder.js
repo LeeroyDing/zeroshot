@@ -212,8 +212,10 @@ function buildContext({
     }
   }
 
-  // CANNOT_VALIDATE OPTIMIZATION: For validators, find criteria that were previously
-  // determined unverifiable and tell the validator to skip them (saves API calls)
+  // CANNOT_VALIDATE OPTIMIZATION: For validators, find criteria with PERMANENT environmental
+  // limitations and tell the validator to skip them (saves API calls).
+  // NOTE: Only skips CANNOT_VALIDATE (permanent), NOT CANNOT_VALIDATE_YET (temporary).
+  // CANNOT_VALIDATE_YET criteria are re-evaluated because the condition may have changed.
   if (role === 'validator') {
     const prevValidations = messageBus.query({
       cluster_id: cluster.id,
@@ -222,12 +224,13 @@ function buildContext({
       limit: 50, // Get all validation results from this cluster
     });
 
-    // Extract all CANNOT_VALIDATE criteria from previous validation results
+    // Extract only CANNOT_VALIDATE (permanent) criteria - NOT CANNOT_VALIDATE_YET (temporary)
     const cannotValidateCriteria = [];
     for (const msg of prevValidations) {
       const criteriaResults = msg.content?.data?.criteriaResults;
       if (Array.isArray(criteriaResults)) {
         for (const cr of criteriaResults) {
+          // Only exact match 'CANNOT_VALIDATE' - CANNOT_VALIDATE_YET should be re-evaluated
           if (cr.status === 'CANNOT_VALIDATE' && cr.id) {
             // Avoid duplicates
             if (!cannotValidateCriteria.find((c) => c.id === cr.id)) {
@@ -241,11 +244,11 @@ function buildContext({
       }
     }
 
-    // Inject skip instructions if there are unverifiable criteria
+    // Inject skip instructions for permanently unverifiable criteria only
     if (cannotValidateCriteria.length > 0) {
-      context += `\n## ⚠️ Previously Unverifiable Criteria (SKIP THESE)\n\n`;
-      context += `The following criteria were determined CANNOT_VALIDATE in previous iterations.\n`;
-      context += `The environmental limitations have not changed. Do NOT re-attempt verification.\n`;
+      context += `\n## ⚠️ Permanently Unverifiable Criteria (SKIP THESE)\n\n`;
+      context += `The following criteria have PERMANENT environmental limitations (missing tools, no access).\n`;
+      context += `These limitations have not changed. Do NOT re-attempt verification.\n`;
       context += `Mark these as CANNOT_VALIDATE again with the same reason.\n\n`;
       for (const cv of cannotValidateCriteria) {
         context += `- **${cv.id}**: ${cv.reason}\n`;

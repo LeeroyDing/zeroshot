@@ -770,8 +770,8 @@ Input formats:
         // Set module-level reference so safePrint/safeWrite route through footer
         activeStatusFooter = statusFooter;
 
-        // Subscribe to AGENT_LIFECYCLE to track agent states and PIDs
-        const lifecycleUnsubscribe = cluster.messageBus.subscribeTopic('AGENT_LIFECYCLE', (msg) => {
+        // Handler for AGENT_LIFECYCLE messages (extracted for replay)
+        const handleLifecycleMessage = (msg) => {
           const data = msg.content?.data || {};
           const event = data.event;
           const agentId = data.agent || msg.sender;
@@ -810,7 +810,23 @@ Input formats:
           } else if (event === 'STOPPED') {
             statusFooter.removeAgent(agentId);
           }
-        });
+        };
+
+        // Subscribe to AGENT_LIFECYCLE to track agent states and PIDs
+        const lifecycleUnsubscribe = cluster.messageBus.subscribeTopic(
+          'AGENT_LIFECYCLE',
+          handleLifecycleMessage
+        );
+
+        // CRITICAL: Replay historical lifecycle messages that may have been published
+        // BEFORE we subscribed. This fixes the race condition where PROCESS_SPAWNED
+        // fires during orchestrator.start() but subscription happens after.
+        const historicalLifecycle = cluster.messageBus
+          .getAll(clusterId)
+          .filter((msg) => msg.topic === 'AGENT_LIFECYCLE');
+        for (const msg of historicalLifecycle) {
+          handleLifecycleMessage(msg);
+        }
 
         // Start the status footer
         statusFooter.start();
@@ -3990,13 +4006,27 @@ function renderMessagesToTerminal(clusterId, messages) {
           }
         }
       }
-      // Show CANNOT_VALIDATE criteria as warnings
+      // Show CANNOT_VALIDATE (permanent) as warnings, CANNOT_VALIDATE_YET (temporary) as errors
       const criteriaResults = data.criteriaResults;
       if (Array.isArray(criteriaResults)) {
+        // CANNOT_VALIDATE_YET = temporary, treated as FAIL (work incomplete)
+        const cannotValidateYet = criteriaResults.filter((c) => c.status === 'CANNOT_VALIDATE_YET');
+        if (cannotValidateYet.length > 0) {
+          lines.push(
+            `${prefix}   ${chalk.red('❌ Cannot validate yet')} (${cannotValidateYet.length} criteria - work incomplete):`
+          );
+          for (const cv of cannotValidateYet) {
+            lines.push(
+              `${prefix}     ${chalk.red('•')} ${cv.id}: ${cv.reason || 'No reason provided'}`
+            );
+          }
+        }
+
+        // CANNOT_VALIDATE = permanent, treated as PASS (environmental limitation)
         const cannotValidate = criteriaResults.filter((c) => c.status === 'CANNOT_VALIDATE');
         if (cannotValidate.length > 0) {
           lines.push(
-            `${prefix}   ${chalk.yellow('⚠️ Could not validate')} (${cannotValidate.length} criteria):`
+            `${prefix}   ${chalk.yellow('⚠️ Could not validate')} (${cannotValidate.length} criteria - permanent):`
           );
           for (const cv of cannotValidate) {
             lines.push(
@@ -4650,13 +4680,25 @@ function printMessage(msg, showClusterId = false, watchMode = false, isActive = 
       });
     }
 
-    // Show CANNOT_VALIDATE criteria as warnings
+    // Show CANNOT_VALIDATE (permanent) as warnings, CANNOT_VALIDATE_YET (temporary) as errors
     const criteriaResults = data.criteriaResults;
     if (Array.isArray(criteriaResults)) {
+      // CANNOT_VALIDATE_YET = temporary, treated as FAIL (work incomplete)
+      const cannotValidateYet = criteriaResults.filter((c) => c.status === 'CANNOT_VALIDATE_YET');
+      if (cannotValidateYet.length > 0) {
+        safePrint(
+          `${prefix} ${chalk.red('❌ Cannot validate yet')} (${cannotValidateYet.length} criteria - work incomplete):`
+        );
+        for (const cv of cannotValidateYet) {
+          safePrint(`${prefix}   ${chalk.red('•')} ${cv.id}: ${cv.reason || 'No reason provided'}`);
+        }
+      }
+
+      // CANNOT_VALIDATE = permanent, treated as PASS (environmental limitation)
       const cannotValidate = criteriaResults.filter((c) => c.status === 'CANNOT_VALIDATE');
       if (cannotValidate.length > 0) {
         safePrint(
-          `${prefix} ${chalk.yellow('⚠️ Could not validate')} (${cannotValidate.length} criteria):`
+          `${prefix} ${chalk.yellow('⚠️ Could not validate')} (${cannotValidate.length} criteria - permanent):`
         );
         for (const cv of cannotValidate) {
           safePrint(

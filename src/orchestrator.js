@@ -2453,12 +2453,25 @@ return true;`,
             md += '\n';
           }
         }
-        // Show CANNOT_VALIDATE criteria as warnings
+        // Show CANNOT_VALIDATE (permanent) as warnings, CANNOT_VALIDATE_YET (temporary) as errors
         const criteriaResults = data.criteriaResults;
         if (Array.isArray(criteriaResults)) {
+          // CANNOT_VALIDATE_YET = temporary, treated as FAIL (work incomplete)
+          const cannotValidateYet = criteriaResults.filter(
+            (c) => c.status === 'CANNOT_VALIDATE_YET'
+          );
+          if (cannotValidateYet.length > 0) {
+            md += `**❌ Cannot Validate Yet (${cannotValidateYet.length} criteria - work incomplete):**\n`;
+            for (const cv of cannotValidateYet) {
+              md += `- ${cv.id}: ${cv.reason || 'No reason provided'}\n`;
+            }
+            md += '\n';
+          }
+
+          // CANNOT_VALIDATE = permanent, treated as PASS (environmental limitation)
           const cannotValidate = criteriaResults.filter((c) => c.status === 'CANNOT_VALIDATE');
           if (cannotValidate.length > 0) {
-            md += `**⚠️ Could Not Validate (${cannotValidate.length} criteria):**\n`;
+            md += `**⚠️ Could Not Validate (${cannotValidate.length} criteria - permanent):**\n`;
             for (const cv of cannotValidate) {
               md += `- ${cv.id}: ${cv.reason || 'No reason provided'}\n`;
             }

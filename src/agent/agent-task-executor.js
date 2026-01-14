@@ -546,7 +546,7 @@ async function spawnClaudeTask(agent, context) {
 
   // CRITICAL: Update agent.processPid with the REAL Claude process PID
   // The initial proc.pid was the wrapper script which exits immediately.
-  // The watcher updates tasks.json with the actual Claude process PID.
+  // The watcher updates SQLite store with the actual Claude process PID.
   const taskInfo = getTask(taskId);
   if (taskInfo?.pid) {
     agent.processPid = taskInfo.pid;
@@ -583,8 +583,12 @@ async function waitForTaskReady(agent, taskId, maxRetries = 10, delayMs = 200) {
     await new Promise((r) => setTimeout(r, delayMs));
   }
 
-  // Continue anyway after max retries - the task may still work
-  console.warn(`⚠️ Task ${taskId} not yet visible after ${maxRetries} retries, continuing anyway`);
+  // FAIL FAST: Task not found after retries = unrecoverable error
+  // Continuing with a non-existent task causes 30s of pointless polling then crash
+  throw new Error(
+    `Task ${taskId} not found after ${maxRetries} retries (${maxRetries * delayMs}ms). ` +
+      `Task spawn may have failed silently. Check zeroshot task run output.`
+  );
 }
 
 /**

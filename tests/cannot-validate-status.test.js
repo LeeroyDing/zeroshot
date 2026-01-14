@@ -1,13 +1,17 @@
 /**
- * Tests for CANNOT_VALIDATE status in criteriaResults
+ * Tests for CANNOT_VALIDATE and CANNOT_VALIDATE_YET statuses in criteriaResults
  *
- * CANNOT_VALIDATE is used when a validator cannot execute a verification step
- * due to missing tools, permissions, or environment issues.
+ * CANNOT_VALIDATE (permanent):
+ * - Used when verification is impossible due to environment (missing tools, no access)
+ * - Treated as PASS (we accept we can't check it)
+ * - Skipped on retry iterations (environment won't change)
+ * - Displayed as warning (yellow) in CLI and export
  *
- * Behavior:
- * - Treated as PASS for workflow purposes (doesn't block)
- * - Displayed as warning in CLI and export
- * - Requires reason field explaining why validation was impossible
+ * CANNOT_VALIDATE_YET (temporary):
+ * - Used when verification is not yet possible (work incomplete, tests failing)
+ * - Treated as FAIL (work needs to continue)
+ * - Re-evaluated on retry iterations (condition may have changed)
+ * - Displayed as error (red) in CLI and export
  */
 
 const assert = require('assert');
@@ -199,6 +203,17 @@ describe('CANNOT_VALIDATE Status', function () {
       assert.strictEqual(validCriteriaResult.status, 'CANNOT_VALIDATE');
       assert.ok(validCriteriaResult.reason, 'Should have reason field');
     });
+
+    it('should accept CANNOT_VALIDATE_YET as valid status in criteriaResults', function () {
+      const validCriteriaResult = {
+        id: 'AC1',
+        status: 'CANNOT_VALIDATE_YET',
+        reason: 'Tests not passing yet - refactor incomplete',
+      };
+
+      assert.strictEqual(validCriteriaResult.status, 'CANNOT_VALIDATE_YET');
+      assert.ok(validCriteriaResult.reason, 'Should have reason field');
+    });
   });
 
   describe('Context Builder Skip Injection', function () {
@@ -238,7 +253,7 @@ describe('CANNOT_VALIDATE Status', function () {
         const context = buildContext(baseParams({ messageBus: mockBusWithCriteria(criteria) }));
 
         // Must include header
-        assert.ok(context.includes('Previously Unverifiable Criteria'), 'Missing header');
+        assert.ok(context.includes('Permanently Unverifiable Criteria'), 'Missing header');
         // Must include ALL CANNOT_VALIDATE criteria (AC2 and AC3, NOT AC1 or AC4)
         assert.ok(context.includes('AC2'), 'Missing AC2');
         assert.ok(context.includes('kubectl not installed'), 'Missing AC2 reason');
@@ -263,7 +278,7 @@ describe('CANNOT_VALIDATE Status', function () {
             })
           );
           assert.ok(
-            !context.includes('Previously Unverifiable Criteria'),
+            !context.includes('Permanently Unverifiable Criteria'),
             `Should NOT inject for role="${role}"`
           );
         }
@@ -499,6 +514,204 @@ describe('CANNOT_VALIDATE Status', function () {
         // Both should be present
         assert.ok(context.includes('AC1'), 'Should include AC1 from iteration 1');
         assert.ok(context.includes('AC2'), 'Should include AC2 from iteration 2');
+      });
+    });
+  });
+
+  describe('CANNOT_VALIDATE_YET Status', function () {
+    describe('Export Markdown Generation', function () {
+      it('should show CANNOT_VALIDATE_YET as errors (not warnings) in export', function () {
+        const mockCluster = {
+          state: 'completed',
+          createdAt: Date.now() - 60000,
+          agents: [{ id: 'validator' }],
+        };
+
+        const messages = [
+          {
+            id: 'msg-1',
+            topic: 'ISSUE_OPENED',
+            sender: 'user',
+            timestamp: Date.now() - 10000,
+            content: { text: 'Test issue' },
+          },
+          {
+            id: 'msg-2',
+            topic: 'VALIDATION_RESULT',
+            sender: 'validator',
+            timestamp: Date.now(),
+            content: {
+              data: {
+                approved: false,
+                summary: 'Work incomplete',
+                criteriaResults: [
+                  { id: 'AC1', status: 'PASS', evidence: {} },
+                  {
+                    id: 'AC2',
+                    status: 'CANNOT_VALIDATE_YET',
+                    reason: 'Tests not passing - 204 warnings remain',
+                  },
+                ],
+              },
+            },
+          },
+        ];
+
+        const markdown = orchestrator._exportMarkdown(mockCluster, 'test-cluster', messages);
+
+        // CANNOT_VALIDATE_YET should show as error with "Cannot Validate Yet"
+        assert.ok(
+          markdown.includes('Cannot Validate Yet'),
+          'Should include "Cannot Validate Yet" section'
+        );
+        assert.ok(markdown.includes('work incomplete'), 'Should indicate work incomplete');
+        assert.ok(markdown.includes('AC2'), 'Should include AC2 criterion ID');
+        assert.ok(markdown.includes('204 warnings'), 'Should include AC2 reason');
+      });
+
+      it('should show both CANNOT_VALIDATE and CANNOT_VALIDATE_YET separately', function () {
+        const mockCluster = {
+          state: 'completed',
+          createdAt: Date.now() - 60000,
+          agents: [{ id: 'validator' }],
+        };
+
+        const messages = [
+          {
+            id: 'msg-1',
+            topic: 'ISSUE_OPENED',
+            sender: 'user',
+            timestamp: Date.now() - 10000,
+            content: { text: 'Test issue' },
+          },
+          {
+            id: 'msg-2',
+            topic: 'VALIDATION_RESULT',
+            sender: 'validator',
+            timestamp: Date.now(),
+            content: {
+              data: {
+                approved: false,
+                criteriaResults: [
+                  { id: 'AC1', status: 'CANNOT_VALIDATE', reason: 'kubectl not installed' },
+                  { id: 'AC2', status: 'CANNOT_VALIDATE_YET', reason: 'Refactor incomplete' },
+                ],
+              },
+            },
+          },
+        ];
+
+        const markdown = orchestrator._exportMarkdown(mockCluster, 'test-cluster', messages);
+
+        // Both sections should exist
+        assert.ok(markdown.includes('Could Not Validate'), 'Should have permanent section');
+        assert.ok(markdown.includes('Cannot Validate Yet'), 'Should have temporary section');
+        assert.ok(markdown.includes('AC1'), 'Should include AC1');
+        assert.ok(markdown.includes('AC2'), 'Should include AC2');
+        assert.ok(markdown.includes('kubectl'), 'Should include AC1 reason');
+        assert.ok(markdown.includes('Refactor'), 'Should include AC2 reason');
+      });
+    });
+
+    describe('Context Builder - NOT Skipped on Retry', function () {
+      const { buildContext } = require('../src/agent/agent-context-builder');
+
+      const baseParams = (overrides = {}) => ({
+        id: 'validator',
+        role: 'validator',
+        iteration: 2,
+        config: { contextStrategy: { sources: [] } },
+        messageBus: { query: () => [] },
+        cluster: { id: 'test-cluster', createdAt: Date.now() - 60000 },
+        triggeringMessage: { topic: 'IMPLEMENTATION_READY', sender: 'worker' },
+        ...overrides,
+      });
+
+      const mockBusWithCriteria = (criteriaResults) => ({
+        query: ({ topic }) => {
+          if (topic === 'VALIDATION_RESULT') {
+            return [{ content: { data: { criteriaResults } } }];
+          }
+          return [];
+        },
+      });
+
+      it('should NOT inject skip instructions for CANNOT_VALIDATE_YET criteria', function () {
+        const criteria = [
+          { id: 'AC1', status: 'CANNOT_VALIDATE_YET', reason: 'Tests failing' },
+          { id: 'AC2', status: 'CANNOT_VALIDATE_YET', reason: 'Build broken' },
+        ];
+
+        const context = buildContext(baseParams({ messageBus: mockBusWithCriteria(criteria) }));
+
+        // CANNOT_VALIDATE_YET should NOT appear in skip section
+        assert.ok(
+          !context.includes('Permanently Unverifiable'),
+          'Should NOT have skip section for CANNOT_VALIDATE_YET'
+        );
+        assert.ok(
+          !context.includes('SKIP THESE'),
+          'Should NOT have skip instruction for CANNOT_VALIDATE_YET'
+        );
+      });
+
+      it('should only skip CANNOT_VALIDATE (permanent), not CANNOT_VALIDATE_YET (temporary)', function () {
+        const criteria = [
+          { id: 'AC1', status: 'CANNOT_VALIDATE', reason: 'kubectl not installed' },
+          { id: 'AC2', status: 'CANNOT_VALIDATE_YET', reason: 'Refactor incomplete' },
+        ];
+
+        const context = buildContext(baseParams({ messageBus: mockBusWithCriteria(criteria) }));
+
+        // AC1 (permanent) SHOULD be in skip section
+        assert.ok(context.includes('AC1'), 'AC1 should be in skip section');
+        assert.ok(
+          context.includes('kubectl not installed'),
+          'AC1 reason should be in skip section'
+        );
+
+        // AC2 (temporary) should NOT be in skip section
+        // Check that AC2 does NOT appear in the "Permanently Unverifiable" section
+        const skipSection = context.match(
+          /Permanently Unverifiable Criteria[\s\S]*?(?=\n## |$)/
+        )?.[0];
+        if (skipSection) {
+          assert.ok(!skipSection.includes('AC2'), 'AC2 should NOT be in skip section');
+          assert.ok(
+            !skipSection.includes('Refactor incomplete'),
+            'AC2 reason should NOT be in skip section'
+          );
+        }
+      });
+
+      it('should re-evaluate CANNOT_VALIDATE_YET on each iteration', function () {
+        // Simulate multiple validation results where CANNOT_VALIDATE_YET appears
+        const messageBus = {
+          query: ({ topic }) => {
+            if (topic === 'VALIDATION_RESULT') {
+              return [
+                {
+                  content: {
+                    data: {
+                      criteriaResults: [
+                        { id: 'AC1', status: 'CANNOT_VALIDATE_YET', reason: 'Build failing' },
+                      ],
+                    },
+                  },
+                },
+              ];
+            }
+            return [];
+          },
+        };
+
+        const context = buildContext(baseParams({ iteration: 3, messageBus }));
+
+        // CANNOT_VALIDATE_YET should NOT appear in skip section even on iteration 3
+        assert.ok(
+          !context.includes('AC1') || !context.includes('Permanently Unverifiable'),
+          'CANNOT_VALIDATE_YET should never be skipped'
+        );
       });
     });
   });
