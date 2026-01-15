@@ -670,6 +670,92 @@ function setupDaemonCleanup(orchestrator, clusterId) {
   process.on('SIGINT', () => cleanup('SIGINT'));
 }
 
+function readClusterTokenTotals(orchestrator, clusterId) {
+  let totalTokens = 0;
+  let totalCostUsd = 0;
+  try {
+    const clusterObj = orchestrator.getCluster(clusterId);
+    if (clusterObj?.messageBus) {
+      const tokensByRole = clusterObj.messageBus.getTokensByRole(clusterId);
+      if (tokensByRole?._total?.count > 0) {
+        const total = tokensByRole._total;
+        totalTokens = (total.inputTokens || 0) + (total.outputTokens || 0);
+        totalCostUsd = total.totalCostUsd || 0;
+      }
+    }
+  } catch {
+    /* Token tracking not available */
+  }
+  return { totalTokens, totalCostUsd };
+}
+
+function enrichClustersWithTokens(clusters, orchestrator) {
+  return clusters.map((cluster) => {
+    const totals = readClusterTokenTotals(orchestrator, cluster.id);
+    return {
+      ...cluster,
+      ...totals,
+    };
+  });
+}
+
+function formatClusterRow(cluster) {
+  const created = new Date(cluster.createdAt).toLocaleString();
+  const tokenDisplay = cluster.totalTokens > 0 ? cluster.totalTokens.toLocaleString() : '-';
+  const costDisplay = cluster.totalCostUsd > 0 ? '$' + cluster.totalCostUsd.toFixed(3) : '-';
+
+  const stateDisplay =
+    cluster.state === 'zombie' ? chalk.red(cluster.state.padEnd(12)) : cluster.state.padEnd(12);
+  const rowColor = cluster.state === 'zombie' ? chalk.red : (text) => text;
+
+  return `${rowColor(cluster.id.padEnd(25))} ${stateDisplay} ${cluster.agentCount
+    .toString()
+    .padEnd(8)} ${tokenDisplay.padEnd(12)} ${costDisplay.padEnd(8)} ${created}`;
+}
+
+function printClusterTable(enrichedClusters) {
+  if (enrichedClusters.length === 0) {
+    console.log(chalk.dim('\n=== Clusters ==='));
+    console.log('No active clusters');
+    return;
+  }
+
+  console.log(chalk.bold('\n=== Clusters ==='));
+  console.log(
+    `${'ID'.padEnd(25)} ${'State'.padEnd(12)} ${'Agents'.padEnd(8)} ${'Tokens'.padEnd(
+      12
+    )} ${'Cost'.padEnd(8)} Created`
+  );
+  console.log('-'.repeat(100));
+  for (const cluster of enrichedClusters) {
+    console.log(formatClusterRow(cluster));
+  }
+}
+
+async function tryGetTasksData(getTasksData, options) {
+  if (typeof getTasksData !== 'function') {
+    return [];
+  }
+  try {
+    return await getTasksData(options);
+  } catch {
+    return [];
+  }
+}
+
+function printListJson(enrichedClusters, tasks) {
+  console.log(
+    JSON.stringify(
+      {
+        clusters: enrichedClusters,
+        tasks,
+      },
+      null,
+      2
+    )
+  );
+}
+
 // Lazy-loaded orchestrator (quiet by default) - created on first use
 /** @type {import('../src/orchestrator') | null} */
 let _orchestrator = null;
@@ -1177,95 +1263,20 @@ program
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     try {
-      // Get clusters
-      const clusters = (await getOrchestrator()).listClusters();
       const orchestrator = await getOrchestrator();
+      const clusters = orchestrator.listClusters();
+      const enrichedClusters = enrichClustersWithTokens(clusters, orchestrator);
 
-      // Enrich clusters with token data
-      const enrichedClusters = clusters.map((cluster) => {
-        let totalTokens = 0;
-        let totalCostUsd = 0;
-        try {
-          const clusterObj = orchestrator.getCluster(cluster.id);
-          if (clusterObj?.messageBus) {
-            const tokensByRole = clusterObj.messageBus.getTokensByRole(cluster.id);
-            if (tokensByRole?._total?.count > 0) {
-              const total = tokensByRole._total;
-              totalTokens = (total.inputTokens || 0) + (total.outputTokens || 0);
-              totalCostUsd = total.totalCostUsd || 0;
-            }
-          }
-        } catch {
-          /* Token tracking not available */
-        }
-        return {
-          ...cluster,
-          totalTokens,
-          totalCostUsd,
-        };
-      });
-
-      // Get tasks (dynamic import)
       const { listTasks, getTasksData } = await import('../task-lib/commands/list.js');
 
-      // JSON output mode
       if (options.json) {
-        // Get tasks data if available
-        let tasks = [];
-        try {
-          if (typeof getTasksData === 'function') {
-            tasks = await getTasksData(options);
-          }
-        } catch {
-          /* Tasks not available */
-        }
-
-        console.log(
-          JSON.stringify(
-            {
-              clusters: enrichedClusters,
-              tasks,
-            },
-            null,
-            2
-          )
-        );
+        const tasks = await tryGetTasksData(getTasksData, options);
+        printListJson(enrichedClusters, tasks);
         return;
       }
 
-      // Human-readable output (default)
-      // Print clusters
-      if (enrichedClusters.length > 0) {
-        console.log(chalk.bold('\n=== Clusters ==='));
-        console.log(
-          `${'ID'.padEnd(25)} ${'State'.padEnd(12)} ${'Agents'.padEnd(8)} ${'Tokens'.padEnd(12)} ${'Cost'.padEnd(8)} Created`
-        );
-        console.log('-'.repeat(100));
+      printClusterTable(enrichedClusters);
 
-        for (const cluster of enrichedClusters) {
-          const created = new Date(cluster.createdAt).toLocaleString();
-          const tokenDisplay = cluster.totalTokens > 0 ? cluster.totalTokens.toLocaleString() : '-';
-          const costDisplay =
-            cluster.totalCostUsd > 0 ? '$' + cluster.totalCostUsd.toFixed(3) : '-';
-
-          // Highlight zombie clusters in red
-          const stateDisplay =
-            cluster.state === 'zombie'
-              ? chalk.red(cluster.state.padEnd(12))
-              : cluster.state.padEnd(12);
-
-          const rowColor = cluster.state === 'zombie' ? chalk.red : (s) => s;
-
-          console.log(
-            `${rowColor(cluster.id.padEnd(25))} ${stateDisplay} ${cluster.agentCount.toString().padEnd(8)} ${tokenDisplay.padEnd(12)} ${costDisplay.padEnd(8)} ${created}`
-          );
-        }
-      } else {
-        console.log(chalk.dim('\n=== Clusters ==='));
-        console.log('No active clusters');
-      }
-
-      // Print tasks
       console.log(chalk.bold('\n=== Tasks ==='));
       await listTasks(options);
     } catch (error) {
