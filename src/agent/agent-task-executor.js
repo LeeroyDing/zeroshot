@@ -694,6 +694,349 @@ async function waitForTaskReady(agent, taskId, maxRetries = 10, delayMs = 200) {
   );
 }
 
+const MAX_STATUS_FAILURES = 30;
+
+function createLogFollowState() {
+  return {
+    output: '',
+    logFilePath: null,
+    lastSize: 0,
+    pollInterval: null,
+    statusCheckInterval: null,
+    resolved: false,
+    lineBuffer: '',
+    consecutiveExecFailures: 0,
+  };
+}
+
+function lookupLogFilePath(ctPath, taskId) {
+  try {
+    return execSync(`${ctPath} get-log-path ${taskId}`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function parseTimestampedLine(line) {
+  let timestamp = Date.now();
+  let content = line.replace(/\r$/, '');
+
+  const timestampMatch = content.match(/^\[(\d{13})\](.*)$/);
+  if (timestampMatch) {
+    timestamp = parseInt(timestampMatch[1], 10);
+    content = timestampMatch[2];
+  }
+
+  return { timestamp, content };
+}
+
+function shouldSkipLogLine(content) {
+  return (
+    content.startsWith('===') ||
+    content.startsWith('Finished:') ||
+    content.startsWith('Exit code:') ||
+    (content.includes('"type":"system"') && content.includes('"subtype":"init"'))
+  );
+}
+
+function isValidJsonLine(content) {
+  if (!content.trim().startsWith('{')) {
+    return false;
+  }
+
+  try {
+    JSON.parse(content);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function broadcastAgentLine({ agent, providerName, state, line }) {
+  if (!line.trim()) return;
+
+  const { timestamp, content } = parseTimestampedLine(line);
+  if (shouldSkipLogLine(content)) {
+    return;
+  }
+
+  const isValidJson = isValidJsonLine(content);
+  state.output += content + '\n';
+
+  agent.lastOutputTime = Date.now();
+
+  agent._publish({
+    topic: 'AGENT_OUTPUT',
+    receiver: 'broadcast',
+    timestamp,
+    content: {
+      text: content,
+      data: {
+        type: isValidJson ? 'json' : 'text',
+        line: content,
+        agent: agent.id,
+        role: agent.role,
+        iteration: agent.iteration,
+        provider: providerName,
+      },
+    },
+  });
+}
+
+function appendContentToBuffer(state, content, onLine) {
+  state.lineBuffer += content;
+  const lines = state.lineBuffer.split('\n');
+
+  for (let i = 0; i < lines.length - 1; i++) {
+    onLine(lines[i]);
+  }
+
+  state.lineBuffer = lines[lines.length - 1];
+}
+
+function pollLogFileForUpdates({ agent, fsModule, ctPath, taskId, state, onNewContent }) {
+  if (!state.logFilePath) {
+    const logFilePath = lookupLogFilePath(ctPath, taskId);
+    if (!logFilePath) {
+      return;
+    }
+    state.logFilePath = logFilePath;
+    agent._log(`📋 Agent ${agent.id}: Found log file: ${logFilePath}`);
+  }
+
+  if (!fsModule.existsSync(state.logFilePath)) {
+    return;
+  }
+
+  try {
+    const stats = fsModule.statSync(state.logFilePath);
+    const currentSize = stats.size;
+
+    if (currentSize > state.lastSize) {
+      const fd = fsModule.openSync(state.logFilePath, 'r');
+      const buffer = Buffer.alloc(currentSize - state.lastSize);
+      fsModule.readSync(fd, buffer, 0, buffer.length, state.lastSize);
+      fsModule.closeSync(fd);
+
+      onNewContent(buffer.toString('utf-8'));
+      state.lastSize = currentSize;
+    }
+  } catch (err) {
+    const error = /** @type {Error} */ (err);
+    console.warn(`⚠️ Agent ${agent.id}: Error reading log: ${error.message}`);
+  }
+}
+
+function stripAnsiCodes(value) {
+  const ansiPattern = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
+  return value.replace(ansiPattern, '');
+}
+
+function parseStatusFlags(cleanStdout) {
+  return {
+    isCompleted: /Status:\s+completed/i.test(cleanStdout),
+    isFailed: /Status:\s+failed/i.test(cleanStdout),
+    isStale: /Status:\s+stale/i.test(cleanStdout),
+  };
+}
+
+function determineStaleSuccess({ agent, output, providerName, taskId }) {
+  if (!output) {
+    return false;
+  }
+
+  const hasStructuredOutput = /"structured_output"\s*:/.test(output);
+  const hasSuccessResult = /"subtype"\s*:\s*"success"/.test(output);
+  let hasParsedOutput = false;
+
+  try {
+    const { extractJsonFromOutput } = require('./output-extraction');
+    hasParsedOutput = !!extractJsonFromOutput(output, providerName);
+  } catch {
+    // Ignore extraction errors - fallback to other signals
+  }
+
+  const success = hasStructuredOutput || hasSuccessResult || hasParsedOutput;
+  if (!agent.quiet) {
+    agent._log(
+      `[Agent ${agent.id}] Task ${taskId} is stale - recovered as ${success ? 'SUCCESS' : 'FAILURE'} based on output analysis`
+    );
+  }
+
+  return success;
+}
+
+function finalizeLogFollow(agent, state) {
+  if (state.pollInterval) {
+    clearInterval(state.pollInterval);
+  }
+  if (state.statusCheckInterval) {
+    clearInterval(state.statusCheckInterval);
+  }
+  agent.currentTask = null;
+}
+
+function handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, resolve }) {
+  if (!error) {
+    return false;
+  }
+
+  state.consecutiveExecFailures++;
+  if (state.consecutiveExecFailures < MAX_STATUS_FAILURES) {
+    return true;
+  }
+
+  console.error(
+    `[Agent ${agent.id}] ⚠️ Status polling failed ${MAX_STATUS_FAILURES} times consecutively! STOPPING.`
+  );
+  console.error(`  Command: ${ctPath} status ${taskId}`);
+  console.error(`  Error: ${error.message}`);
+  console.error(`  Stderr: ${stderr || 'none'}`);
+  console.error(`  This may indicate zeroshot is not in PATH or task storage is corrupted.`);
+
+  if (!state.resolved) {
+    state.resolved = true;
+    finalizeLogFollow(agent, state);
+
+    agent._publish({
+      topic: 'AGENT_ERROR',
+      receiver: 'broadcast',
+      content: {
+        text: `Task ${taskId} polling failed after ${MAX_STATUS_FAILURES} consecutive failures`,
+        data: {
+          taskId,
+          error: 'polling_timeout',
+          attempts: state.consecutiveExecFailures,
+          role: agent.role,
+          iteration: agent.iteration,
+        },
+      },
+    });
+
+    resolve({
+      success: false,
+      output: state.output,
+      error: `Status polling failed ${MAX_STATUS_FAILURES} times - task may not exist`,
+    });
+  }
+
+  return true;
+}
+
+function handleStatusCompletion({
+  agent,
+  taskId,
+  providerName,
+  state,
+  stdout,
+  pollLogFile,
+  resolve,
+}) {
+  const cleanStdout = stripAnsiCodes(stdout);
+  const { isCompleted, isFailed, isStale } = parseStatusFlags(cleanStdout);
+
+  if (!isCompleted && !isFailed && !isStale) {
+    return false;
+  }
+
+  pollLogFile();
+
+  let success = isCompleted;
+  if (isStale) {
+    success = determineStaleSuccess({ agent, output: state.output, providerName, taskId });
+  }
+
+  setTimeout(() => {
+    if (state.resolved) return;
+    state.resolved = true;
+
+    finalizeLogFollow(agent, state);
+
+    const errorContext = !success
+      ? extractErrorContext({ output: state.output, statusOutput: stdout, taskId })
+      : null;
+
+    resolve({
+      success,
+      output: state.output,
+      error: errorContext,
+      tokenUsage: extractTokenUsage(state.output, providerName),
+    });
+  }, 500);
+
+  return true;
+}
+
+function buildKillHandler({ agent, state, providerName, resolve }) {
+  return {
+    kill: (reason = 'Task killed') => {
+      if (state.resolved) return;
+      state.resolved = true;
+      finalizeLogFollow(agent, state);
+      agent._stopLivenessCheck();
+      resolve({
+        success: false,
+        output: state.output,
+        error: reason,
+        tokenUsage: extractTokenUsage(state.output, providerName),
+      });
+    },
+  };
+}
+
+function createLogFollower({ agent, taskId, fsModule, ctPath, providerName }) {
+  return new Promise((resolve) => {
+    const state = createLogFollowState();
+
+    state.logFilePath = lookupLogFilePath(ctPath, taskId);
+    if (state.logFilePath) {
+      agent._log(`📋 Agent ${agent.id}: Following ct logs for ${taskId}`);
+    } else {
+      agent._log(`⏳ Agent ${agent.id}: Waiting for log file...`);
+    }
+
+    const broadcastLine = (line) => broadcastAgentLine({ agent, providerName, state, line });
+    const processNewContent = (content) => appendContentToBuffer(state, content, broadcastLine);
+    const pollLogFile = () =>
+      pollLogFileForUpdates({
+        agent,
+        fsModule,
+        ctPath,
+        taskId,
+        state,
+        onNewContent: processNewContent,
+      });
+
+    state.pollInterval = setInterval(pollLogFile, 300);
+
+    state.statusCheckInterval = setInterval(() => {
+      exec(`${ctPath} status ${taskId}`, { timeout: 5000 }, (error, stdout, stderr) => {
+        if (state.resolved) return;
+
+        if (handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, resolve })) {
+          return;
+        }
+
+        state.consecutiveExecFailures = 0;
+        handleStatusCompletion({
+          agent,
+          taskId,
+          providerName,
+          state,
+          stdout,
+          pollLogFile,
+          resolve,
+        });
+      });
+    }, 1000);
+
+    agent.currentTask = buildKillHandler({ agent, state, providerName, resolve });
+  });
+}
+
 /**
  * Follow claude-zeroshots logs until completion, streaming to message bus
  * Reads log file directly for reliable streaming
@@ -706,315 +1049,7 @@ function followClaudeTaskLogs(agent, taskId) {
   const ctPath = getClaudeTasksPath();
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
 
-  return new Promise((resolve, _reject) => {
-    let output = '';
-    let logFilePath = null;
-    let lastSize = 0;
-    let pollInterval = null;
-    let statusCheckInterval = null;
-    let resolved = false;
-
-    // Get log file path from ct
-    try {
-      logFilePath = execSync(`${ctPath} get-log-path ${taskId}`, {
-        encoding: 'utf-8',
-        timeout: 5000,
-      }).trim();
-      agent._log(`📋 Agent ${agent.id}: Following ct logs for ${taskId}`);
-    } catch {
-      // Task might not have log file yet, wait and retry
-      agent._log(`⏳ Agent ${agent.id}: Waiting for log file...`);
-    }
-
-    // Buffer for incomplete lines across polls
-    let lineBuffer = '';
-
-    // Broadcast a complete JSON line as one message
-    // Lines are now prefixed with timestamps: [1733301234567]{json...}
-    const broadcastLine = (line) => {
-      if (!line.trim()) return;
-
-      // Parse timestamp prefix if present: [epochMs]content
-      // IMPORTANT: Trim \r from CRLF line endings before matching
-      let timestamp = Date.now();
-      let content = line.replace(/\r$/, '');
-
-      const timestampMatch = content.match(/^\[(\d{13})\](.*)$/);
-      if (timestampMatch) {
-        timestamp = parseInt(timestampMatch[1], 10);
-        content = timestampMatch[2];
-      }
-
-      // Skip known noise patterns (footer, separators, metadata)
-      if (
-        content.startsWith('===') ||
-        content.startsWith('Finished:') ||
-        content.startsWith('Exit code:') ||
-        (content.includes('"type":"system"') && content.includes('"subtype":"init"'))
-      ) {
-        return;
-      }
-
-      // Determine if this is JSON or plain text output
-      const isJson = content.trim().startsWith('{');
-      let isValidJson = false;
-
-      if (isJson) {
-        try {
-          JSON.parse(content);
-          isValidJson = true;
-        } catch {
-          // Looks like JSON but isn't valid - treat as text
-        }
-      }
-
-      // Accumulate output (JSON for parsing, text for human visibility)
-      output += content + '\n';
-
-      // Update liveness timestamp
-      agent.lastOutputTime = Date.now();
-
-      agent._publish({
-        topic: 'AGENT_OUTPUT',
-        receiver: 'broadcast',
-        timestamp, // Use the actual timestamp from when output was produced
-        content: {
-          text: content,
-          data: {
-            type: isValidJson ? 'json' : 'text',
-            line: content,
-            agent: agent.id,
-            role: agent.role,
-            iteration: agent.iteration,
-            provider: providerName,
-          },
-        },
-      });
-    };
-
-    // Process new content by splitting into complete lines
-    const processNewContent = (content) => {
-      // Add to buffer
-      lineBuffer += content;
-
-      // Split by newlines
-      const lines = lineBuffer.split('\n');
-
-      // Process all complete lines (all except last, which might be incomplete)
-      for (let i = 0; i < lines.length - 1; i++) {
-        broadcastLine(lines[i]);
-      }
-
-      // Keep last line in buffer (might be incomplete)
-      lineBuffer = lines[lines.length - 1];
-    };
-
-    // Poll the log file for new content
-    const pollLogFile = () => {
-      // If we don't have log path yet, try to get it
-      if (!logFilePath) {
-        try {
-          logFilePath = execSync(`${ctPath} get-log-path ${taskId}`, {
-            encoding: 'utf-8',
-            timeout: 5000,
-          }).trim();
-          agent._log(`📋 Agent ${agent.id}: Found log file: ${logFilePath}`);
-        } catch {
-          return; // Not ready yet
-        }
-      }
-
-      // Check if file exists
-      if (!fsModule.existsSync(logFilePath)) {
-        return; // File not created yet
-      }
-
-      try {
-        const stats = fsModule.statSync(logFilePath);
-        const currentSize = stats.size;
-
-        if (currentSize > lastSize) {
-          // Read new content
-          const fd = fsModule.openSync(logFilePath, 'r');
-          const buffer = Buffer.alloc(currentSize - lastSize);
-          fsModule.readSync(fd, buffer, 0, buffer.length, lastSize);
-          fsModule.closeSync(fd);
-
-          const newContent = buffer.toString('utf-8');
-          // Process new content line-by-line
-          processNewContent(newContent);
-          lastSize = currentSize;
-        }
-      } catch (err) {
-        // File might have been deleted or locked
-        console.warn(`⚠️ Agent ${agent.id}: Error reading log: ${err.message}`);
-      }
-    };
-
-    // Start polling log file (every 300ms for responsive streaming)
-    pollInterval = setInterval(pollLogFile, 300);
-
-    // Poll ct status to know when task is complete
-    // Track consecutive failures for debugging stuck clusters
-    let consecutiveExecFailures = 0;
-    const MAX_CONSECUTIVE_FAILURES = 30; // 30 seconds of failures = log warning
-
-    statusCheckInterval = setInterval(() => {
-      exec(`${ctPath} status ${taskId}`, { timeout: 5000 }, (error, stdout, stderr) => {
-        if (resolved) return;
-
-        // Track exec failures - if status command keeps failing, something is wrong
-        if (error) {
-          consecutiveExecFailures++;
-          if (consecutiveExecFailures >= MAX_CONSECUTIVE_FAILURES) {
-            console.error(
-              `[Agent ${agent.id}] ⚠️ Status polling failed ${MAX_CONSECUTIVE_FAILURES} times consecutively! STOPPING.`
-            );
-            console.error(`  Command: ${ctPath} status ${taskId}`);
-            console.error(`  Error: ${error.message}`);
-            console.error(`  Stderr: ${stderr || 'none'}`);
-            console.error(
-              `  This may indicate zeroshot is not in PATH or task storage is corrupted.`
-            );
-
-            // Stop polling and resolve with failure
-            if (!resolved) {
-              resolved = true;
-              clearInterval(pollInterval);
-              clearInterval(statusCheckInterval);
-              agent.currentTask = null;
-
-              // Publish error for orchestrator/resume
-              agent._publish({
-                topic: 'AGENT_ERROR',
-                receiver: 'broadcast',
-                content: {
-                  text: `Task ${taskId} polling failed after ${MAX_CONSECUTIVE_FAILURES} consecutive failures`,
-                  data: {
-                    taskId,
-                    error: 'polling_timeout',
-                    attempts: consecutiveExecFailures,
-                    role: agent.role,
-                    iteration: agent.iteration,
-                  },
-                },
-              });
-
-              resolve({
-                success: false,
-                output,
-                error: `Status polling failed ${MAX_CONSECUTIVE_FAILURES} times - task may not exist`,
-              });
-            }
-            return;
-          }
-          return; // Keep polling - might be transient
-        }
-
-        // Reset failure counter on success
-        consecutiveExecFailures = 0;
-
-        // Check for completion/failure status
-        // Strip ANSI codes in case chalk outputs them (shouldn't in non-TTY, but be safe)
-        // Use RegExp constructor to avoid ESLint no-control-regex false positive
-        const ansiPattern = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
-        const cleanStdout = stdout.replace(ansiPattern, '');
-        // Use flexible whitespace matching in case spacing changes
-        const isCompleted = /Status:\s+completed/i.test(cleanStdout);
-        const isFailed = /Status:\s+failed/i.test(cleanStdout);
-        // BUGFIX: Handle "stale (process died)" status - watcher died before updating status
-        // Check if task produced a successful result (structured_output in log file)
-        const isStale = /Status:\s+stale/i.test(cleanStdout);
-
-        if (isCompleted || isFailed || isStale) {
-          // CRITICAL: Read final log content BEFORE checking output
-          // Fixes race where status flips to stale before log polling catches up
-          pollLogFile();
-
-          // For stale tasks, check log file for successful result
-          let success = isCompleted;
-          if (isStale && output) {
-            // Look for structured_output in accumulated output - indicates success
-            const hasStructuredOutput = /"structured_output"\s*:/.test(output);
-            const hasSuccessResult = /"subtype"\s*:\s*"success"/.test(output);
-            let hasParsedOutput = false;
-            try {
-              const { extractJsonFromOutput } = require('./output-extraction');
-              hasParsedOutput = !!extractJsonFromOutput(output, providerName);
-            } catch {
-              // Ignore extraction errors - fallback to other signals
-            }
-            success = hasStructuredOutput || hasSuccessResult || hasParsedOutput;
-            if (!agent.quiet) {
-              agent._log(
-                `[Agent ${agent.id}] Task ${taskId} is stale - recovered as ${success ? 'SUCCESS' : 'FAILURE'} based on output analysis`
-              );
-            }
-          }
-
-          // Clean up and resolve
-          setTimeout(() => {
-            if (resolved) return;
-            resolved = true;
-
-            clearInterval(pollInterval);
-            clearInterval(statusCheckInterval);
-            agent.currentTask = null;
-
-            // Extract error context using shared helper
-            const errorContext = !success
-              ? extractErrorContext({ output, statusOutput: stdout, taskId })
-              : null;
-
-            resolve({
-              success,
-              output,
-              error: errorContext,
-              tokenUsage: extractTokenUsage(output, providerName),
-            });
-          }, 500);
-        }
-      });
-    }, 1000);
-
-    // Store cleanup function for kill
-    // CRITICAL: Must reject promise to avoid orphaned promise that hangs forever
-    agent.currentTask = {
-      kill: (reason = 'Task killed') => {
-        if (resolved) return;
-        resolved = true;
-        clearInterval(pollInterval);
-        clearInterval(statusCheckInterval);
-        agent._stopLivenessCheck();
-        // BUGFIX: Resolve with failure instead of orphaning the promise
-        // This allows the caller to handle the kill gracefully
-        resolve({
-          success: false,
-          output,
-          error: reason,
-          tokenUsage: extractTokenUsage(output, providerName),
-        });
-      },
-    };
-
-    // REMOVED: Task timeout disabled - tasks run until completion or explicit kill
-    // Tasks should run until:
-    // - Completion
-    // - Explicit kill
-    // - External error (rate limit, API failure)
-    //
-    // setTimeout(() => {
-    //   if (resolved) return;
-    //   resolved = true;
-    //
-    //   clearInterval(pollInterval);
-    //   clearInterval(statusCheckInterval);
-    //   agent._stopLivenessCheck();
-    //   agent.currentTask = null;
-    //   const timeoutMinutes = Math.round(agent.timeout / 60000);
-    //   reject(new Error(`Task timed out after ${timeoutMinutes} minutes`));
-    // }, agent.timeout);
-  });
+  return createLogFollower({ agent, taskId, fsModule, ctPath, providerName });
 }
 
 /**
