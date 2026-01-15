@@ -1795,7 +1795,9 @@ function validateModelLevelSupport(agent, provider, levels, warnings) {
   }
 }
 
-function validateModelSelection(agent, provider, catalog, minLevel, maxLevel, rank, warnings) {
+function validateModelSelection(agent, context, warnings) {
+  const { provider, catalog, minLevel, maxLevel, rank } = context;
+
   if (agent.model) {
     if (!catalog[agent.model]) {
       warnings.push(
@@ -1879,10 +1881,17 @@ function validateProviderFeatures(config, settings) {
     if (!provider) continue;
 
     const { levels, catalog, minLevel, maxLevel, rank } = buildProviderContext(provider, settings);
+    const modelSelectionContext = {
+      provider,
+      catalog,
+      minLevel,
+      maxLevel,
+      rank,
+    };
 
     validateJsonSchemaSupport(agent, provider, warnings);
     validateModelLevelSupport(agent, provider, levels, warnings);
-    validateModelSelection(agent, provider, catalog, minLevel, maxLevel, rank, warnings);
+    validateModelSelection(agent, modelSelectionContext, warnings);
     validateModelRulesSupport(agent, provider, catalog, levels, warnings);
     validateReasoningEffortSupport(agent, provider, warnings);
   }
