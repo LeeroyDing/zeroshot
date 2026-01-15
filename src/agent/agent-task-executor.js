@@ -388,9 +388,7 @@ function ensureDangerousGitHook() {
  */
 async function spawnClaudeTask(agent, context) {
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
-  const modelSpec = agent._resolveModelSpec
-    ? agent._resolveModelSpec()
-    : { model: agent._selectModel() };
+  const modelSpec = resolveAgentModelSpec(agent);
 
   const ctPath = getClaudeTasksPath();
   const cwd = agent.config.cwd || process.cwd();
@@ -399,58 +397,27 @@ async function spawnClaudeTask(agent, context) {
   // CRITICAL: Default to strict schema validation to prevent cluster crashes from parse failures
   // strictSchema=true uses Claude CLI's native --json-schema enforcement (no streaming but guaranteed structure)
   // strictSchema=false uses stream-json with post-run validation (live logs but fragile)
-  const desiredOutputFormat = agent.config.outputFormat || 'json';
-  const strictSchema = agent.config.strictSchema !== false; // DEFAULT TO TRUE
-  const runOutputFormat =
-    agent.config.jsonSchema && desiredOutputFormat === 'json' && !strictSchema
-      ? 'stream-json'
-      : desiredOutputFormat;
-  const args = ['task', 'run', '--output-format', runOutputFormat, '--provider', providerName];
-
-  if (modelSpec?.model) {
-    args.push('--model', modelSpec.model);
-  }
-
-  if (modelSpec?.reasoningEffort) {
-    args.push('--reasoning-effort', modelSpec.reasoningEffort);
-  }
-
-  // Add verification mode flag if configured
-  if (agent.config.verificationMode) {
-    args.push('-v');
-  }
+  const { desiredOutputFormat, runOutputFormat } = resolveOutputFormatConfig(agent);
+  const args = buildTaskRunArgs({
+    agent,
+    providerName,
+    modelSpec,
+    runOutputFormat,
+  });
 
   // NOTE: maxRetries is handled by the agent wrapper's internal retry loop,
   // not passed to the CLI. See _handleTrigger() for retry logic.
 
-  // Add JSON schema if specified in agent config.
-  // If we are running stream-json for live logs (strictSchema=false), do NOT pass schema to CLI.
-  if (agent.config.jsonSchema) {
-    if (runOutputFormat === 'json') {
-      // strictSchema=true OR no schema conflict: pass schema to CLI for native enforcement
-      const schema = JSON.stringify(agent.config.jsonSchema);
-      args.push('--json-schema', schema);
-    } else if (!agent.quiet) {
-      agent._log(
-        `[Agent ${agent.id}] jsonSchema configured; running stream-json for live logs (strictSchema=false). Schema will be validated after completion.`
-      );
-    }
-  }
+  maybeLogStreamJsonNotice(agent, runOutputFormat);
 
   // If schema enforcement is desired but we had to run stream-json for live logs,
   // add explicit output instructions so the model still knows the required shape.
-  let finalContext = context;
-  if (
-    agent.config.jsonSchema &&
-    desiredOutputFormat === 'json' &&
-    runOutputFormat === 'stream-json'
-  ) {
-    finalContext += `\n\n## Output Format (REQUIRED)\n\nReturn a JSON object that matches this schema exactly.\n\nSchema:\n\`\`\`json\n${JSON.stringify(
-      agent.config.jsonSchema,
-      null,
-      2
-    )}\n\`\`\`\n`;
-  }
+  const finalContext = buildFinalContext({
+    agent,
+    context,
+    desiredOutputFormat,
+    runOutputFormat,
+  });
 
   args.push(finalContext);
 
@@ -476,16 +443,119 @@ async function spawnClaudeTask(agent, context) {
   // AskUserQuestion blocking handled via:
   // 1. Prompt injection (see agent-context-builder)
   // 2. PreToolUse hook (defense-in-depth) - activated by ZEROSHOT_BLOCK_ASK_USER env var
-  if (providerName === 'claude') {
-    ensureAskUserQuestionHook();
+  ensureProviderHooks(agent, providerName);
+  const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec);
+  const taskId = await spawnTaskProcess({
+    agent,
+    ctPath,
+    args,
+    cwd,
+    spawnEnv,
+  });
 
-    // WORKTREE MODE: Install git safety hook (blocks dangerous git commands)
-    if (agent.worktree?.enabled) {
-      ensureDangerousGitHook();
-    }
+  agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
+
+  // Wait for task to be registered in zeroshot storage (race condition fix)
+  await waitForTaskReady(agent, taskId);
+
+  // CRITICAL: Update agent.processPid with the REAL Claude process PID
+  // The initial proc.pid was the wrapper script which exits immediately.
+  // The watcher updates SQLite store with the actual Claude process PID.
+  const taskInfo = getTask(taskId);
+  if (taskInfo?.pid) {
+    agent.processPid = taskInfo.pid;
+    agent._log(`📋 Agent ${agent.id}: Real process PID: ${taskInfo.pid}`);
   }
 
-  // Build environment for spawn
+  // Now follow the logs and stream output
+  return followClaudeTaskLogs(agent, taskId);
+}
+
+function resolveAgentModelSpec(agent) {
+  return agent._resolveModelSpec ? agent._resolveModelSpec() : { model: agent._selectModel() };
+}
+
+function resolveOutputFormatConfig(agent) {
+  // CRITICAL: Default to strict schema validation to prevent cluster crashes from parse failures
+  // strictSchema=true uses Claude CLI's native --json-schema enforcement (no streaming but guaranteed structure)
+  // strictSchema=false uses stream-json with post-run validation (live logs but fragile)
+  const desiredOutputFormat = agent.config.outputFormat || 'json';
+  const strictSchema = agent.config.strictSchema !== false; // DEFAULT TO TRUE
+  const runOutputFormat =
+    agent.config.jsonSchema && desiredOutputFormat === 'json' && !strictSchema
+      ? 'stream-json'
+      : desiredOutputFormat;
+
+  return { desiredOutputFormat, strictSchema, runOutputFormat };
+}
+
+function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
+  const args = ['task', 'run', '--output-format', runOutputFormat, '--provider', providerName];
+
+  if (modelSpec?.model) {
+    args.push('--model', modelSpec.model);
+  }
+
+  if (modelSpec?.reasoningEffort) {
+    args.push('--reasoning-effort', modelSpec.reasoningEffort);
+  }
+
+  // Add verification mode flag if configured
+  if (agent.config.verificationMode) {
+    args.push('-v');
+  }
+
+  // Add JSON schema if specified in agent config.
+  // If we are running stream-json for live logs (strictSchema=false), do NOT pass schema to CLI.
+  if (agent.config.jsonSchema && runOutputFormat === 'json') {
+    const schema = JSON.stringify(agent.config.jsonSchema);
+    args.push('--json-schema', schema);
+  }
+
+  return args;
+}
+
+function maybeLogStreamJsonNotice(agent, runOutputFormat) {
+  if (agent.config.jsonSchema && runOutputFormat !== 'json' && !agent.quiet) {
+    agent._log(
+      `[Agent ${agent.id}] jsonSchema configured; running stream-json for live logs (strictSchema=false). Schema will be validated after completion.`
+    );
+  }
+}
+
+function buildFinalContext({ agent, context, desiredOutputFormat, runOutputFormat }) {
+  if (
+    agent.config.jsonSchema &&
+    desiredOutputFormat === 'json' &&
+    runOutputFormat === 'stream-json'
+  ) {
+    return (
+      context +
+      `\n\n## Output Format (REQUIRED)\n\nReturn a JSON object that matches this schema exactly.\n\nSchema:\n\`\`\`json\n${JSON.stringify(
+        agent.config.jsonSchema,
+        null,
+        2
+      )}\n\`\`\`\n`
+    );
+  }
+
+  return context;
+}
+
+function ensureProviderHooks(agent, providerName) {
+  if (providerName !== 'claude') {
+    return;
+  }
+
+  ensureAskUserQuestionHook();
+
+  // WORKTREE MODE: Install git safety hook (blocks dangerous git commands)
+  if (agent.worktree?.enabled) {
+    ensureDangerousGitHook();
+  }
+}
+
+function buildSpawnEnv(agent, providerName, modelSpec) {
   const spawnEnv = { ...process.env };
 
   if (providerName === 'claude') {
@@ -497,10 +567,19 @@ async function spawnClaudeTask(agent, context) {
     }
   }
 
+  return spawnEnv;
+}
+
+function parseTaskIdFromOutput(stdout) {
+  const match = stdout.match(/Task spawned: ((?:task-)?[a-z]+-[a-z]+-[a-z0-9]+)/);
+  return match ? match[1] : null;
+}
+
+function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
   const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
 
-  const taskId = await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const proc = spawn(ctPath, args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -549,9 +628,8 @@ async function spawnClaudeTask(agent, context) {
       if (code === 0) {
         // Parse task ID from output: "✓ Task spawned: xxx-yyy-nn"
         // Format: <adjective>-<noun>-<digits> (may or may not have task- prefix)
-        const match = stdout.match(/Task spawned: ((?:task-)?[a-z]+-[a-z]+-[a-z0-9]+)/);
-        if (match) {
-          const spawnedTaskId = match[1];
+        const spawnedTaskId = parseTaskIdFromOutput(stdout);
+        if (spawnedTaskId) {
           agent.currentTaskId = spawnedTaskId; // Track for resume capability
           agent._publishLifecycle('TASK_ID_ASSIGNED', {
             pid: agent.processPid,
@@ -580,23 +658,6 @@ async function spawnClaudeTask(agent, context) {
       reject(error);
     });
   });
-
-  agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
-
-  // Wait for task to be registered in zeroshot storage (race condition fix)
-  await waitForTaskReady(agent, taskId);
-
-  // CRITICAL: Update agent.processPid with the REAL Claude process PID
-  // The initial proc.pid was the wrapper script which exits immediately.
-  // The watcher updates SQLite store with the actual Claude process PID.
-  const taskInfo = getTask(taskId);
-  if (taskInfo?.pid) {
-    agent.processPid = taskInfo.pid;
-    agent._log(`📋 Agent ${agent.id}: Real process PID: ${taskInfo.pid}`);
-  }
-
-  // Now follow the logs and stream output
-  return followClaudeTaskLogs(agent, taskId);
 }
 
 /**
