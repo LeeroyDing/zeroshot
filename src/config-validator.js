@@ -260,67 +260,77 @@ function validateBasicStructure(config, depth = 0) {
 /**
  * Phase 2: Analyze message flow for structural problems
  */
-function analyzeMessageFlow(config) {
-  const errors = [];
-  const warnings = [];
+function ensureTopicList(map, topic) {
+  if (!map.has(topic)) {
+    map.set(topic, []);
+  }
+  return map.get(topic);
+}
 
-  // Build topic graph
-  const topicProducers = new Map(); // topic -> [agentIds that produce it]
-  const topicConsumers = new Map(); // topic -> [agentIds that consume it]
-  const agentOutputTopics = new Map(); // agentId -> [topics it produces]
-  const agentInputTopics = new Map(); // agentId -> [topics it consumes]
+function recordAgentTriggers(agent, topicConsumers, agentInputTopics) {
+  for (const trigger of agent.triggers || []) {
+    const topic = trigger.topic;
+    ensureTopicList(topicConsumers, topic).push(agent.id);
+    agentInputTopics.get(agent.id).push(topic);
+  }
+}
 
-  // System always produces ISSUE_OPENED
+function recordAgentOutputs(agent, topicProducers, agentOutputTopics) {
+  const outputTopic = agent.hooks?.onComplete?.config?.topic;
+  if (outputTopic) {
+    ensureTopicList(topicProducers, outputTopic).push(agent.id);
+    agentOutputTopics.get(agent.id).push(outputTopic);
+  }
+
+  const hookLogicScript = agent.hooks?.onComplete?.logic?.script;
+  if (!hookLogicScript || typeof hookLogicScript !== 'string') {
+    return;
+  }
+
+  const topicMatches = hookLogicScript.match(/topic:\s*['"]([A-Z_]+)['"]/g) || [];
+  for (const match of topicMatches) {
+    const dynamicTopic = match.match(/['"]([A-Z_]+)['"]/)?.[1];
+    if (!dynamicTopic || dynamicTopic === outputTopic) {
+      continue;
+    }
+
+    const producers = ensureTopicList(topicProducers, dynamicTopic);
+    if (!producers.includes(agent.id)) {
+      producers.push(`${agent.id}*`);
+    }
+
+    const outputs = agentOutputTopics.get(agent.id);
+    if (!outputs.includes(dynamicTopic)) {
+      outputs.push(dynamicTopic);
+    }
+  }
+}
+
+function buildMessageFlowGraph(config) {
+  const topicProducers = new Map();
+  const topicConsumers = new Map();
+  const agentOutputTopics = new Map();
+  const agentInputTopics = new Map();
+
   topicProducers.set('ISSUE_OPENED', ['system']);
 
   for (const agent of config.agents) {
     agentInputTopics.set(agent.id, []);
     agentOutputTopics.set(agent.id, []);
 
-    // Track what topics this agent consumes (triggers)
-    for (const trigger of agent.triggers || []) {
-      const topic = trigger.topic;
-      if (!topicConsumers.has(topic)) {
-        topicConsumers.set(topic, []);
-      }
-      topicConsumers.get(topic).push(agent.id);
-      agentInputTopics.get(agent.id).push(topic);
-    }
-
-    // Track what topics this agent produces (hooks)
-    const outputTopic = agent.hooks?.onComplete?.config?.topic;
-    if (outputTopic) {
-      if (!topicProducers.has(outputTopic)) {
-        topicProducers.set(outputTopic, []);
-      }
-      topicProducers.get(outputTopic).push(agent.id);
-      agentOutputTopics.get(agent.id).push(outputTopic);
-    }
-
-    // Also extract topics that could be dynamically produced by hook logic scripts
-    const hookLogicScript = agent.hooks?.onComplete?.logic?.script;
-    if (hookLogicScript && typeof hookLogicScript === 'string') {
-      // Scan for { topic: 'TOPIC_NAME' } or { topic: "TOPIC_NAME" } patterns
-      const topicMatches = hookLogicScript.match(/topic:\s*['"]([A-Z_]+)['"]/g) || [];
-      for (const match of topicMatches) {
-        const dynamicTopic = match.match(/['"]([A-Z_]+)['"]/)?.[1];
-        if (dynamicTopic && dynamicTopic !== outputTopic) {
-          if (!topicProducers.has(dynamicTopic)) {
-            topicProducers.set(dynamicTopic, []);
-          }
-          // Mark as dynamic producer (append * to indicate it's conditional)
-          if (!topicProducers.get(dynamicTopic).includes(agent.id)) {
-            topicProducers.get(dynamicTopic).push(`${agent.id}*`);
-          }
-          if (!agentOutputTopics.get(agent.id).includes(dynamicTopic)) {
-            agentOutputTopics.get(agent.id).push(dynamicTopic);
-          }
-        }
-      }
-    }
+    recordAgentTriggers(agent, topicConsumers, agentInputTopics);
+    recordAgentOutputs(agent, topicProducers, agentOutputTopics);
   }
 
-  // === CHECK 1: No bootstrap trigger ===
+  return {
+    topicProducers,
+    topicConsumers,
+    agentOutputTopics,
+    agentInputTopics,
+  };
+}
+
+function reportMissingBootstrap(topicConsumers, errors) {
   const issueOpenedConsumers = topicConsumers.get('ISSUE_OPENED') || [];
   if (issueOpenedConsumers.length === 0) {
     errors.push(
@@ -328,8 +338,9 @@ function analyzeMessageFlow(config) {
         'Add a trigger: { "topic": "ISSUE_OPENED", "action": "execute_task" }'
     );
   }
+}
 
-  // === CHECK 2: No completion handler ===
+function reportCompletionHandlers(config, errors, warnings) {
   const completionHandlers = config.agents.filter(
     (a) =>
       a.triggers?.some((t) => t.action === 'stop_cluster') ||
@@ -354,10 +365,14 @@ function analyzeMessageFlow(config) {
         'This causes race conditions. Keep only one.'
     );
   }
+}
 
-  // === CHECK 3: Orphan topics (produced but never consumed) ===
+function reportOrphanTopics(topicProducers, topicConsumers, warnings) {
   for (const [topic, producers] of topicProducers) {
-    if (topic === 'CLUSTER_COMPLETE') continue; // System handles this
+    if (topic === 'CLUSTER_COMPLETE') {
+      continue;
+    }
+
     const consumers = topicConsumers.get(topic) || [];
     if (consumers.length === 0) {
       warnings.push(
@@ -365,11 +380,17 @@ function analyzeMessageFlow(config) {
       );
     }
   }
+}
 
-  // === CHECK 4: Waiting for topics that are never produced ===
+function reportUnproducedTopics(topicConsumers, topicProducers, errors) {
   for (const [topic, consumers] of topicConsumers) {
-    if (topic === 'ISSUE_OPENED' || topic === 'CLUSTER_RESUMED') continue; // System produces
-    if (topic.endsWith('*')) continue; // Wildcard pattern
+    if (topic === 'ISSUE_OPENED' || topic === 'CLUSTER_RESUMED') {
+      continue;
+    }
+    if (topic.endsWith('*')) {
+      continue;
+    }
+
     const producers = topicProducers.get(topic) || [];
     if (producers.length === 0) {
       errors.push(
@@ -378,45 +399,45 @@ function analyzeMessageFlow(config) {
       );
     }
   }
+}
 
-  // === CHECK 5: Self-triggering agents (instant infinite loop) ===
-  // Skip if trigger or hook has logic block (conditional self-trigger is allowed)
+function reportSelfTriggeringAgents(config, agentInputTopics, agentOutputTopics, errors) {
   for (const agent of config.agents) {
     const inputs = agentInputTopics.get(agent.id) || [];
     const outputs = agentOutputTopics.get(agent.id) || [];
     const selfTrigger = inputs.find((t) => outputs.includes(t));
-    if (selfTrigger) {
-      // Check if the self-trigger is conditional (has logic block on trigger or hook)
-      const triggerHasLogic = agent.triggers?.some(
-        (t) => t.topic === selfTrigger && t.logic?.script
-      );
-      const hookHasLogic = agent.hooks?.onComplete?.logic?.script;
+    if (!selfTrigger) {
+      continue;
+    }
 
-      if (!triggerHasLogic && !hookHasLogic) {
-        errors.push(
-          `Agent '${agent.id}' triggers on '${selfTrigger}' and produces '${selfTrigger}'. ` +
-            'Instant infinite loop.'
-        );
-      }
-      // If either has logic, it's a controlled self-trigger pattern (e.g., progress updates)
+    const triggerHasLogic = agent.triggers?.some((t) => t.topic === selfTrigger && t.logic?.script);
+    const hookHasLogic = agent.hooks?.onComplete?.logic?.script;
+
+    if (!triggerHasLogic && !hookHasLogic) {
+      errors.push(
+        `Agent '${agent.id}' triggers on '${selfTrigger}' and produces '${selfTrigger}'. ` +
+          'Instant infinite loop.'
+      );
     }
   }
+}
 
-  // === CHECK 6: Two-agent circular dependency ===
+function reportTwoAgentCycles(config, agentInputTopics, agentOutputTopics, warnings) {
   for (const agentA of config.agents) {
     const outputsA = agentOutputTopics.get(agentA.id) || [];
     for (const agentB of config.agents) {
-      if (agentA.id === agentB.id) continue;
+      if (agentA.id === agentB.id) {
+        continue;
+      }
+
       const inputsB = agentInputTopics.get(agentB.id) || [];
       const outputsB = agentOutputTopics.get(agentB.id) || [];
       const inputsA = agentInputTopics.get(agentA.id) || [];
 
-      // A produces what B consumes, AND B produces what A consumes
       const aToB = outputsA.some((t) => inputsB.includes(t));
       const bToA = outputsB.some((t) => inputsA.includes(t));
 
       if (aToB && bToA) {
-        // This might be intentional (rejection loop), check if there's an escape
         const hasEscapeLogic =
           agentA.triggers?.some((t) => t.logic) || agentB.triggers?.some((t) => t.logic);
         if (!hasEscapeLogic) {
@@ -428,35 +449,45 @@ function analyzeMessageFlow(config) {
       }
     }
   }
+}
 
-  // === CHECK 7: Validator without worker re-trigger ===
+function reportMissingValidationTriggers(config, errors) {
   const validators = config.agents.filter((a) => a.role === 'validator');
   const workers = config.agents.filter((a) => a.role === 'implementation');
 
-  if (validators.length > 0 && workers.length > 0) {
-    for (const worker of workers) {
-      const triggersOnValidation = worker.triggers?.some(
-        (t) => t.topic === 'VALIDATION_RESULT' || t.topic.includes('VALIDATION')
-      );
-      if (!triggersOnValidation) {
-        errors.push(
-          `Worker '${worker.id}' has validators but doesn't trigger on VALIDATION_RESULT. ` +
-            'Rejections will be ignored. Add trigger: { "topic": "VALIDATION_RESULT", "logic": {...} }'
-        );
-      }
-    }
+  if (validators.length === 0 || workers.length === 0) {
+    return;
   }
 
-  // === CHECK 8: Context strategy missing trigger topics ===
+  for (const worker of workers) {
+    const triggersOnValidation = worker.triggers?.some(
+      (t) => t.topic === 'VALIDATION_RESULT' || t.topic.includes('VALIDATION')
+    );
+    if (!triggersOnValidation) {
+      errors.push(
+        `Worker '${worker.id}' has validators but doesn't trigger on VALIDATION_RESULT. ` +
+          'Rejections will be ignored. Add trigger: { "topic": "VALIDATION_RESULT", "logic": {...} }'
+      );
+    }
+  }
+}
+
+function reportMissingContextTopics(config, warnings) {
   for (const agent of config.agents) {
-    if (!agent.contextStrategy?.sources) continue;
+    if (!agent.contextStrategy?.sources) {
+      continue;
+    }
 
     const triggerTopics = (agent.triggers || []).map((t) => t.topic);
     const contextTopics = agent.contextStrategy.sources.map((s) => s.topic);
 
     for (const triggerTopic of triggerTopics) {
-      if (triggerTopic === 'ISSUE_OPENED' || triggerTopic === 'CLUSTER_RESUMED') continue;
-      if (triggerTopic.endsWith('*')) continue;
+      if (triggerTopic === 'ISSUE_OPENED' || triggerTopic === 'CLUSTER_RESUMED') {
+        continue;
+      }
+      if (triggerTopic.endsWith('*')) {
+        continue;
+      }
 
       if (!contextTopics.includes(triggerTopic)) {
         warnings.push(
@@ -466,6 +497,23 @@ function analyzeMessageFlow(config) {
       }
     }
   }
+}
+
+function analyzeMessageFlow(config) {
+  const errors = [];
+  const warnings = [];
+
+  const { topicProducers, topicConsumers, agentOutputTopics, agentInputTopics } =
+    buildMessageFlowGraph(config);
+
+  reportMissingBootstrap(topicConsumers, errors);
+  reportCompletionHandlers(config, errors, warnings);
+  reportOrphanTopics(topicProducers, topicConsumers, warnings);
+  reportUnproducedTopics(topicConsumers, topicProducers, errors);
+  reportSelfTriggeringAgents(config, agentInputTopics, agentOutputTopics, errors);
+  reportTwoAgentCycles(config, agentInputTopics, agentOutputTopics, warnings);
+  reportMissingValidationTriggers(config, errors);
+  reportMissingContextTopics(config, warnings);
 
   return { errors, warnings };
 }
