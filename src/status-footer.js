@@ -58,7 +58,7 @@ const AGENT_STATE = Object.freeze({
 // Agent states that indicate "active" work (from agent-lifecycle.js)
 // These should show in the footer with metrics
 const ACTIVE_STATES = new Set([
-  AGENT_STATE.EXECUTING_TASK,   // Actually running claude CLI
+  AGENT_STATE.EXECUTING_TASK, // Actually running claude CLI
   AGENT_STATE.EVALUATING_LOGIC, // Evaluating trigger conditions
   AGENT_STATE.BUILDING_CONTEXT, // Building context for task
 ]);
@@ -175,7 +175,7 @@ class StatusFooter {
     if (this.printQueue.length === 0) return;
 
     // Write all queued output
-    const output = this.printQueue.map(text => text + '\n').join('');
+    const output = this.printQueue.map((text) => text + '\n').join('');
     this.printQueue = [];
     process.stdout.write(output);
   }
@@ -458,14 +458,8 @@ class StatusFooter {
       if (!data.target || !data.current) continue;
 
       // Lerp CPU and RAM toward target (they fluctuate)
-      data.current.cpuPercent = this._lerp(
-        data.current.cpuPercent,
-        data.target.cpuPercent
-      );
-      data.current.memoryMB = this._lerp(
-        data.current.memoryMB,
-        data.target.memoryMB
-      );
+      data.current.cpuPercent = this._lerp(data.current.cpuPercent, data.target.cpuPercent);
+      data.current.memoryMB = this._lerp(data.current.memoryMB, data.target.memoryMB);
       // Network is cumulative counter - no interpolation, just use latest
     }
   }
@@ -767,60 +761,107 @@ class StatusFooter {
     // Border with corner
     parts.push(`${COLORS.gray}└─${COLORS.reset}`);
 
-    // Cluster state
+    this.appendClusterStateSummary(parts);
+    this.appendDurationSummary(parts);
+    this.appendAgentCountSummary(parts);
+    this.appendTokenCostSummary(parts);
+    this.appendAggregateMetricsSummary(parts);
+
+    // Pad and close with bottom corner
+    return this.padSummaryLine(parts, width);
+  }
+
+  appendClusterStateSummary(parts) {
     const stateColor = this.clusterState === 'running' ? COLORS.green : COLORS.yellow;
     parts.push(` ${stateColor}${this.clusterState}${COLORS.reset}`);
+  }
 
-    // Duration
+  appendDurationSummary(parts) {
     const duration = this.formatDuration(Date.now() - this.startTime);
     parts.push(` ${COLORS.gray}│${COLORS.reset} ${COLORS.dim}${duration}${COLORS.reset}`);
+  }
 
-    // Agent counts
-    const executing = Array.from(this.agents.values()).filter((a) => ACTIVE_STATES.has(a.state)).length;
-    const total = this.agents.size;
-    parts.push(` ${COLORS.gray}│${COLORS.reset} ${COLORS.green}${executing}/${total}${COLORS.reset} active`);
+  appendAgentCountSummary(parts) {
+    const { executing, total } = this.getActiveAgentCounts();
+    parts.push(
+      ` ${COLORS.gray}│${COLORS.reset} ${COLORS.green}${executing}/${total}${COLORS.reset} active`
+    );
+  }
 
-    // Token cost (from message bus)
-    if (this.messageBus && this.clusterId) {
-      try {
-        const tokensByRole = this.messageBus.getTokensByRole(this.clusterId);
-        const totalCost = tokensByRole?._total?.totalCostUsd || 0;
-        if (totalCost > 0) {
-          // Format: $0.05 or $1.23 or $12.34
-          const costStr = totalCost < 0.01 ? '<$0.01' : `$${totalCost.toFixed(2)}`;
-          parts.push(` ${COLORS.gray}│${COLORS.reset} ${COLORS.yellow}${costStr}${COLORS.reset}`);
-        }
-      } catch {
-        // Ignore errors - token tracking is optional
-      }
+  getActiveAgentCounts() {
+    const executing = Array.from(this.agents.values()).filter((a) =>
+      ACTIVE_STATES.has(a.state)
+    ).length;
+    return { executing, total: this.agents.size };
+  }
+
+  appendTokenCostSummary(parts) {
+    const costStr = this.getTokenCostSummary();
+    if (!costStr) {
+      return;
+    }
+    parts.push(` ${COLORS.gray}│${COLORS.reset} ${COLORS.yellow}${costStr}${COLORS.reset}`);
+  }
+
+  getTokenCostSummary() {
+    if (!this.messageBus || !this.clusterId) {
+      return null;
     }
 
-    // Aggregate metrics (using interpolated values for smooth display)
+    try {
+      const tokensByRole = this.messageBus.getTokensByRole(this.clusterId);
+      const totalCost = tokensByRole?._total?.totalCostUsd || 0;
+      if (totalCost <= 0) {
+        return null;
+      }
+
+      // Format: $0.05 or $1.23 or $12.34
+      return totalCost < 0.01 ? '<$0.01' : `$${totalCost.toFixed(2)}`;
+    } catch {
+      // Ignore errors - token tracking is optional
+      return null;
+    }
+  }
+
+  appendAggregateMetricsSummary(parts) {
+    const { totalCpu, totalMem, totalBytesSent, totalBytesReceived } = this.getAggregateMetrics();
+
+    if (totalCpu <= 0 && totalMem <= 0) {
+      return;
+    }
+
+    parts.push(` ${COLORS.gray}│${COLORS.reset}`);
+    let aggregateStr = ` ${COLORS.cyan}Σ${COLORS.reset} `;
+    aggregateStr += `${COLORS.dim}CPU:${COLORS.reset}${totalCpu.toFixed(1)}%`;
+    aggregateStr += ` ${COLORS.dim}RAM:${COLORS.reset}${totalMem.toFixed(1)}MB`;
+    if (totalBytesSent > 0 || totalBytesReceived > 0) {
+      aggregateStr += ` ${COLORS.dim}NET:${COLORS.reset}${COLORS.cyan}↑${this.formatBytes(totalBytesSent)} ↓${this.formatBytes(totalBytesReceived)}${COLORS.reset}`;
+    }
+    parts.push(aggregateStr);
+  }
+
+  getAggregateMetrics() {
     let totalCpu = 0;
     let totalMem = 0;
     let totalBytesSent = 0;
     let totalBytesReceived = 0;
+
+    // Aggregate metrics (using interpolated values for smooth display)
     for (const data of this.interpolatedMetrics.values()) {
-      if (data.exists && data.current) {
-        totalCpu += data.current.cpuPercent;
-        totalMem += data.current.memoryMB;
-        totalBytesSent += data.network?.bytesSent || 0;
-        totalBytesReceived += data.network?.bytesReceived || 0;
+      if (!data.exists || !data.current) {
+        continue;
       }
+
+      totalCpu += data.current.cpuPercent;
+      totalMem += data.current.memoryMB;
+      totalBytesSent += data.network?.bytesSent || 0;
+      totalBytesReceived += data.network?.bytesReceived || 0;
     }
 
-    if (totalCpu > 0 || totalMem > 0) {
-      parts.push(` ${COLORS.gray}│${COLORS.reset}`);
-      let aggregateStr = ` ${COLORS.cyan}Σ${COLORS.reset} `;
-      aggregateStr += `${COLORS.dim}CPU:${COLORS.reset}${totalCpu.toFixed(1)}%`;
-      aggregateStr += ` ${COLORS.dim}RAM:${COLORS.reset}${totalMem.toFixed(1)}MB`;
-      if (totalBytesSent > 0 || totalBytesReceived > 0) {
-        aggregateStr += ` ${COLORS.dim}NET:${COLORS.reset}${COLORS.cyan}↑${this.formatBytes(totalBytesSent)} ↓${this.formatBytes(totalBytesReceived)}${COLORS.reset}`;
-      }
-      parts.push(aggregateStr);
-    }
+    return { totalCpu, totalMem, totalBytesSent, totalBytesReceived };
+  }
 
-    // Pad and close with bottom corner
+  padSummaryLine(parts, width) {
     const content = parts.join('');
     const contentLen = this.stripAnsi(content).length;
     const padding = Math.max(0, width - contentLen - 1);
