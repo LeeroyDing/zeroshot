@@ -2396,128 +2396,164 @@ return true;`,
     md += `## Task\n\n${taskText}\n\n`;
 
     // Group messages by agent for cleaner output
-    const agentOutputs = new Map();
+    const agentOutputs = this._collectAgentOutputs(messages);
 
-    for (const msg of messages) {
-      if (msg.topic === 'AGENT_OUTPUT') {
-        if (!agentOutputs.has(msg.sender)) {
-          agentOutputs.set(msg.sender, []);
-        }
-        agentOutputs.get(msg.sender).push(msg);
-      }
-    }
-
-    // Agent sections
     for (const [agentId, agentMsgs] of agentOutputs) {
-      md += `## Agent: ${agentId}\n\n`;
-
-      let text = '';
-      let tools = [];
-
-      for (const msg of agentMsgs) {
-        const content = msg.content?.data?.line || msg.content?.data?.chunk || msg.content?.text;
-        if (!content) continue;
-
-        const provider = normalizeProviderName(
-          msg.content?.data?.provider || msg.sender_provider || 'claude'
-        );
-        const events = parseProviderChunk(provider, content);
-        for (const event of events) {
-          switch (event.type) {
-            case 'text':
-              text += event.text;
-              break;
-            case 'tool_call':
-              tools.push({ name: event.toolName, input: event.input });
-              break;
-            case 'tool_result':
-              if (tools.length > 0) {
-                const lastTool = tools[tools.length - 1];
-                lastTool.result = event.content;
-                lastTool.isError = event.isError;
-              }
-              break;
-          }
-        }
-      }
-
-      // Output text
-      if (text.trim()) {
-        md += `### Output\n\n${text.trim()}\n\n`;
-      }
-
-      // Tools used
-      if (tools.length > 0) {
-        md += `### Tools Used\n\n`;
-        for (const tool of tools) {
-          const status = tool.isError ? '❌' : '✓';
-          md += `- **${tool.name}** ${status}\n`;
-          if (tool.input) {
-            const inputStr =
-              typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input);
-            if (inputStr.length < 100) {
-              md += `  - Input: \`${inputStr}\`\n`;
-            }
-          }
-        }
-        md += '\n';
-      }
+      md += this._renderAgentMarkdown(agentId, agentMsgs, parseProviderChunk);
     }
 
-    // Validation results
-    const validations = messages.filter((m) => m.topic === 'VALIDATION_RESULT');
-    if (validations.length > 0) {
-      md += `## Validation Results\n\n`;
-      for (const v of validations) {
-        const data = v.content?.data || {};
-        const approved = data.approved === true || data.approved === 'true';
-        const icon = approved ? '✅' : '❌';
-        md += `### ${v.sender} ${icon}\n\n`;
-        if (data.summary) {
-          md += `${data.summary}\n\n`;
-        }
-        if (!approved && data.issues) {
-          const issues = typeof data.issues === 'string' ? JSON.parse(data.issues) : data.issues;
-          if (Array.isArray(issues) && issues.length > 0) {
-            md += `**Issues:**\n`;
-            for (const issue of issues) {
-              md += `- ${issue}\n`;
-            }
-            md += '\n';
-          }
-        }
-        // Show CANNOT_VALIDATE (permanent) as warnings, CANNOT_VALIDATE_YET (temporary) as errors
-        const criteriaResults = data.criteriaResults;
-        if (Array.isArray(criteriaResults)) {
-          // CANNOT_VALIDATE_YET = temporary, treated as FAIL (work incomplete)
-          const cannotValidateYet = criteriaResults.filter(
-            (c) => c.status === 'CANNOT_VALIDATE_YET'
-          );
-          if (cannotValidateYet.length > 0) {
-            md += `**❌ Cannot Validate Yet (${cannotValidateYet.length} criteria - work incomplete):**\n`;
-            for (const cv of cannotValidateYet) {
-              md += `- ${cv.id}: ${cv.reason || 'No reason provided'}\n`;
-            }
-            md += '\n';
-          }
-
-          // CANNOT_VALIDATE = permanent, treated as PASS (environmental limitation)
-          const cannotValidate = criteriaResults.filter((c) => c.status === 'CANNOT_VALIDATE');
-          if (cannotValidate.length > 0) {
-            md += `**⚠️ Could Not Validate (${cannotValidate.length} criteria - permanent):**\n`;
-            for (const cv of cannotValidate) {
-              md += `- ${cv.id}: ${cv.reason || 'No reason provided'}\n`;
-            }
-            md += '\n';
-          }
-        }
-      }
-    }
+    md += this._renderValidationMarkdown(messages);
 
     // Final status
     const clusterComplete = messages.find((m) => m.topic === 'CLUSTER_COMPLETE');
     if (clusterComplete) {
       md += `## Result\n\n✅ **Cluster completed successfully**\n`;
+    }
+
+    return md;
+  }
+
+  _collectAgentOutputs(messages) {
+    const agentOutputs = new Map();
+
+    for (const msg of messages) {
+      if (msg.topic !== 'AGENT_OUTPUT') continue;
+      if (!agentOutputs.has(msg.sender)) {
+        agentOutputs.set(msg.sender, []);
+      }
+      agentOutputs.get(msg.sender).push(msg);
+    }
+
+    return agentOutputs;
+  }
+
+  _extractAgentOutput(agentMsgs, parseProviderChunk) {
+    let text = '';
+    const tools = [];
+
+    for (const msg of agentMsgs) {
+      const content = msg.content?.data?.line || msg.content?.data?.chunk || msg.content?.text;
+      if (!content) continue;
+
+      const provider = normalizeProviderName(
+        msg.content?.data?.provider || msg.sender_provider || 'claude'
+      );
+      const events = parseProviderChunk(provider, content);
+      for (const event of events) {
+        switch (event.type) {
+          case 'text':
+            text += event.text;
+            break;
+          case 'tool_call':
+            tools.push({ name: event.toolName, input: event.input });
+            break;
+          case 'tool_result':
+            if (tools.length > 0) {
+              const lastTool = tools[tools.length - 1];
+              lastTool.result = event.content;
+              lastTool.isError = event.isError;
+            }
+            break;
+        }
+      }
+    }
+
+    return { text, tools };
+  }
+
+  _renderToolMarkdown(tools) {
+    let md = `### Tools Used\n\n`;
+
+    for (const tool of tools) {
+      const status = tool.isError ? '❌' : '✓';
+      md += `- **${tool.name}** ${status}\n`;
+      if (tool.input) {
+        const inputStr = typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input);
+        if (inputStr.length < 100) {
+          md += `  - Input: \`${inputStr}\`\n`;
+        }
+      }
+    }
+
+    return `${md}\n`;
+  }
+
+  _renderAgentMarkdown(agentId, agentMsgs, parseProviderChunk) {
+    let md = `## Agent: ${agentId}\n\n`;
+    const { text, tools } = this._extractAgentOutput(agentMsgs, parseProviderChunk);
+
+    if (text.trim()) {
+      md += `### Output\n\n${text.trim()}\n\n`;
+    }
+
+    if (tools.length > 0) {
+      md += this._renderToolMarkdown(tools);
+    }
+
+    return md;
+  }
+
+  _renderCriteriaMarkdown(criteriaResults) {
+    if (!Array.isArray(criteriaResults)) {
+      return '';
+    }
+
+    let md = '';
+    const cannotValidateYet = criteriaResults.filter((c) => c.status === 'CANNOT_VALIDATE_YET');
+    if (cannotValidateYet.length > 0) {
+      md += `**❌ Cannot Validate Yet (${cannotValidateYet.length} criteria - work incomplete):**\n`;
+      for (const cv of cannotValidateYet) {
+        md += `- ${cv.id}: ${cv.reason || 'No reason provided'}\n`;
+      }
+      md += '\n';
+    }
+
+    const cannotValidate = criteriaResults.filter((c) => c.status === 'CANNOT_VALIDATE');
+    if (cannotValidate.length > 0) {
+      md += `**⚠️ Could Not Validate (${cannotValidate.length} criteria - permanent):**\n`;
+      for (const cv of cannotValidate) {
+        md += `- ${cv.id}: ${cv.reason || 'No reason provided'}\n`;
+      }
+      md += '\n';
+    }
+
+    return md;
+  }
+
+  _renderValidationEntryMarkdown(validation) {
+    const data = validation.content?.data || {};
+    const approved = data.approved === true || data.approved === 'true';
+    const icon = approved ? '✅' : '❌';
+    let md = `### ${validation.sender} ${icon}\n\n`;
+
+    if (data.summary) {
+      md += `${data.summary}\n\n`;
+    }
+
+    if (!approved && data.issues) {
+      const issues = typeof data.issues === 'string' ? JSON.parse(data.issues) : data.issues;
+      if (Array.isArray(issues) && issues.length > 0) {
+        md += `**Issues:**\n`;
+        for (const issue of issues) {
+          md += `- ${issue}\n`;
+        }
+        md += '\n';
+      }
+    }
+
+    md += this._renderCriteriaMarkdown(data.criteriaResults);
+    return md;
+  }
+
+  _renderValidationMarkdown(messages) {
+    const validations = messages.filter((m) => m.topic === 'VALIDATION_RESULT');
+    if (validations.length === 0) {
+      return '';
+    }
+
+    let md = `## Validation Results\n\n`;
+    for (const validation of validations) {
+      md += this._renderValidationEntryMarkdown(validation);
     }
 
     return md;
