@@ -881,6 +881,493 @@ async function showTaskStatus(id, options) {
   await showStatus(id);
 }
 
+async function showTaskLogs(id, options) {
+  const { showLogs } = await import('../task-lib/commands/logs.js');
+  await showLogs(id, options);
+}
+
+async function handleLogsById(id, options) {
+  const { detectIdType } = require('../lib/id-detector');
+  const type = detectIdType(id);
+
+  if (!type) {
+    console.error(`ID not found: ${id}`);
+    process.exit(1);
+  }
+
+  if (type === 'task') {
+    await showTaskLogs(id, options);
+    return true;
+  }
+
+  return false;
+}
+
+function parseLogLimit(options) {
+  return parseInt(options.limit, 10);
+}
+
+function printClusterFollowHeader(allClusters, activeClusters) {
+  if (activeClusters.length === 0) {
+    console.log(
+      chalk.dim(
+        `--- Showing history from ${allClusters.length} cluster(s), waiting for new activity (Ctrl+C to stop) ---\n`
+      )
+    );
+    return;
+  }
+  if (activeClusters.length === 1) {
+    console.log(chalk.dim(`--- Following ${activeClusters[0].id} (Ctrl+C to stop) ---\n`));
+    return;
+  }
+  console.log(
+    chalk.dim(`--- Following ${activeClusters.length} active clusters (Ctrl+C to stop) ---`)
+  );
+  for (const cluster of activeClusters) {
+    console.log(chalk.dim(`    • ${cluster.id} [${cluster.state}]`));
+  }
+  console.log('');
+}
+
+function printClusterHistory(quietOrchestrator, allClusters, limit, options) {
+  for (const clusterInfo of allClusters) {
+    const cluster = quietOrchestrator.getCluster(clusterInfo.id);
+    if (!cluster) {
+      continue;
+    }
+    const messages = cluster.messageBus.getAll(clusterInfo.id);
+    const recentMessages = messages.slice(-limit);
+    const isActive = clusterInfo.state === 'running';
+    for (const msg of recentMessages) {
+      printMessage(msg, clusterInfo.id, options.watch, isActive);
+    }
+  }
+}
+
+function collectClusterTaskTitles(quietOrchestrator, allClusters) {
+  const taskTitles = [];
+  for (const clusterInfo of allClusters) {
+    const cluster = quietOrchestrator.getCluster(clusterInfo.id);
+    if (!cluster) {
+      continue;
+    }
+    const messages = cluster.messageBus.getAll(clusterInfo.id);
+    const issueOpened = messages.find((m) => m.topic === 'ISSUE_OPENED');
+    if (issueOpened) {
+      taskTitles.push({
+        id: clusterInfo.id,
+        summary: formatTaskSummary(issueOpened, 30),
+      });
+    }
+  }
+  return taskTitles;
+}
+
+function setTerminalTitleForClusters(taskTitles) {
+  if (taskTitles.length === 1) {
+    setTerminalTitle(`zeroshot [${taskTitles[0].id}]: ${taskTitles[0].summary}`);
+    return;
+  }
+  if (taskTitles.length > 1) {
+    setTerminalTitle(`zeroshot: ${taskTitles.length} clusters`);
+    return;
+  }
+  setTerminalTitle('zeroshot: waiting...');
+}
+
+function printInitialWatchTasks(quietOrchestrator, allClusters, multiCluster) {
+  for (const clusterInfo of allClusters) {
+    const cluster = quietOrchestrator.getCluster(clusterInfo.id);
+    if (!cluster) {
+      continue;
+    }
+    const messages = cluster.messageBus.getAll(clusterInfo.id);
+    const issueOpened = messages.find((m) => m.topic === 'ISSUE_OPENED');
+    if (!issueOpened) {
+      continue;
+    }
+    const clusterLabel = multiCluster ? `[${clusterInfo.id}] ` : '';
+    const taskSummary = formatTaskSummary(issueOpened);
+    console.log(chalk.cyan(`${clusterLabel}Task: ${chalk.bold(taskSummary)}\n`));
+  }
+}
+
+function buildClusterStatesMap(allClusters) {
+  const clusterStates = new Map();
+  for (const cluster of allClusters) {
+    clusterStates.set(cluster.id, cluster.state);
+  }
+  return clusterStates;
+}
+
+function createLogsStatusFooter(allClusters, clusterStates, options) {
+  if (!process.stdout.isTTY) {
+    return null;
+  }
+  if (!options.follow && !options.watch) {
+    return null;
+  }
+  const statusFooter = new StatusFooter({
+    refreshInterval: 1000,
+    enabled: true,
+  });
+  if (allClusters.length > 0) {
+    statusFooter.setCluster(allClusters[0].id);
+    statusFooter.setClusterState(clusterStates.get(allClusters[0].id) || 'running');
+  }
+  activeStatusFooter = statusFooter;
+  statusFooter.start();
+  return statusFooter;
+}
+
+function collectSendersFromBuffer(messageBuffer) {
+  const sendersWithOutput = new Set();
+  for (const msg of messageBuffer) {
+    if (msg.topic === 'AGENT_OUTPUT' && msg.sender) {
+      sendersWithOutput.add(msg.sender);
+    }
+  }
+  return sendersWithOutput;
+}
+
+function flushBufferedSenders(sendersWithOutput, clusterId) {
+  for (const sender of sendersWithOutput) {
+    const senderLabel = `${clusterId || ''}/${sender}`;
+    const prefix = getColorForSender(sender)(`${senderLabel.padEnd(25)} |`);
+    flushLineBuffer(prefix, sender);
+  }
+}
+
+function buildMessageBufferFlusher({ messageBuffer, options, clusterStates, statusFooter }) {
+  const handleLifecycleMessage = statusFooter ? createLifecycleHandler(statusFooter) : null;
+  return () => {
+    if (messageBuffer.length === 0) {
+      return;
+    }
+    messageBuffer.sort((a, b) => a.timestamp - b.timestamp);
+    const sendersWithOutput = collectSendersFromBuffer(messageBuffer);
+    for (const msg of messageBuffer) {
+      if (msg.topic === 'AGENT_LIFECYCLE' && handleLifecycleMessage) {
+        handleLifecycleMessage(msg);
+      }
+      const isActive = clusterStates.get(msg.cluster_id) === 'running';
+      printMessage(msg, true, options.watch, isActive);
+    }
+    const firstClusterId = messageBuffer[0]?.cluster_id;
+    messageBuffer.length = 0;
+    flushBufferedSenders(sendersWithOutput, firstClusterId);
+  };
+}
+
+function addClusterPollers(quietOrchestrator, allClusters, messageBuffer, stopPollers) {
+  for (const clusterInfo of allClusters) {
+    const cluster = quietOrchestrator.getCluster(clusterInfo.id);
+    if (!cluster) {
+      continue;
+    }
+    const stopPoll = cluster.ledger.pollForMessages(
+      clusterInfo.id,
+      (msg) => {
+        messageBuffer.push(msg);
+      },
+      300
+    );
+    stopPollers.push(stopPoll);
+  }
+}
+
+function watchForNewClusters(quietOrchestrator, clusterStates, messageBuffer, stopPollers) {
+  return quietOrchestrator.watchForNewClusters((newCluster) => {
+    console.log(chalk.green(`\n✓ New cluster detected: ${newCluster.id}\n`));
+    clusterStates.set(newCluster.id, 'running');
+    const stopPoll = newCluster.ledger.pollForMessages(
+      newCluster.id,
+      (msg) => {
+        messageBuffer.push(msg);
+      },
+      300
+    );
+    stopPollers.push(stopPoll);
+  });
+}
+
+function cleanupClusterFollow({
+  flushInterval,
+  flushMessages,
+  stopPollers,
+  stopWatching,
+  statusFooter,
+}) {
+  clearInterval(flushInterval);
+  flushMessages();
+  stopPollers.forEach((stop) => stop());
+  stopWatching();
+  if (statusFooter) {
+    statusFooter.stop();
+    activeStatusFooter = null;
+  }
+  restoreTerminalTitle();
+}
+
+function followAllClusters(quietOrchestrator, allClusters, options, multiCluster) {
+  const taskTitles = collectClusterTaskTitles(quietOrchestrator, allClusters);
+  setTerminalTitleForClusters(taskTitles);
+
+  if (options.watch) {
+    printInitialWatchTasks(quietOrchestrator, allClusters, multiCluster);
+  }
+
+  const stopPollers = [];
+  const messageBuffer = [];
+  const clusterStates = buildClusterStatesMap(allClusters);
+  const statusFooter = createLogsStatusFooter(allClusters, clusterStates, options);
+  const flushMessages = buildMessageBufferFlusher({
+    messageBuffer,
+    options,
+    clusterStates,
+    statusFooter,
+  });
+  const flushInterval = setInterval(flushMessages, 250);
+
+  addClusterPollers(quietOrchestrator, allClusters, messageBuffer, stopPollers);
+  const stopWatching = watchForNewClusters(
+    quietOrchestrator,
+    clusterStates,
+    messageBuffer,
+    stopPollers
+  );
+
+  keepProcessAlive(() => {
+    cleanupClusterFollow({
+      flushInterval,
+      flushMessages,
+      stopPollers,
+      stopWatching,
+      statusFooter,
+    });
+  });
+}
+
+function showAllClusterLogs(quietOrchestrator, options, limit) {
+  const allClusters = quietOrchestrator.listClusters();
+  const activeClusters = allClusters.filter((cluster) => cluster.state === 'running');
+
+  if (allClusters.length === 0) {
+    if (options.follow) {
+      console.log('No clusters found. Waiting for new clusters...\n');
+      console.log(chalk.dim('--- Waiting for clusters (Ctrl+C to stop) ---\n'));
+    } else {
+      console.log('No clusters found');
+      return;
+    }
+  }
+
+  const multiCluster = allClusters.length > 1;
+  if (options.follow && allClusters.length > 0) {
+    printClusterFollowHeader(allClusters, activeClusters);
+  }
+
+  printClusterHistory(quietOrchestrator, allClusters, limit, options);
+
+  if (options.follow) {
+    followAllClusters(quietOrchestrator, allClusters, options, multiCluster);
+  }
+}
+
+function getClusterOrExit(quietOrchestrator, id) {
+  const cluster = quietOrchestrator.getCluster(id);
+  if (!cluster) {
+    console.error(`Cluster ${id} not found`);
+    process.exit(1);
+  }
+  return cluster;
+}
+
+function getClusterActiveState(quietOrchestrator, id) {
+  const clusterInfo = quietOrchestrator.listClusters().find((cluster) => cluster.id === id);
+  return clusterInfo?.state === 'running';
+}
+
+function getClusterMessages(cluster, id) {
+  const dbMessages = cluster.messageBus.getAll(id);
+  const taskLogMessages = readAgentTaskLogs(cluster);
+  const allMessages = [...dbMessages, ...taskLogMessages].sort((a, b) => a.timestamp - b.timestamp);
+  return { dbMessages, allMessages };
+}
+
+function printRecentMessages(messages, limit, isActive, options) {
+  const recentMessages = messages.slice(-limit);
+  for (const msg of recentMessages) {
+    printMessage(msg, true, options.watch, isActive);
+  }
+}
+
+function setTerminalTitleForCluster(clusterId, dbMessages) {
+  const issueOpened = dbMessages.find((m) => m.topic === 'ISSUE_OPENED');
+  if (issueOpened) {
+    setTerminalTitle(`zeroshot [${clusterId}]: ${formatTaskSummary(issueOpened, 30)}`);
+  } else {
+    setTerminalTitle(`zeroshot [${clusterId}]`);
+  }
+}
+
+function startClusterDbPolling(cluster, clusterId, isActive, options) {
+  return cluster.ledger.pollForMessages(
+    clusterId,
+    (msg) => {
+      printMessage(msg, true, options.watch, isActive);
+      if (msg.topic === 'AGENT_OUTPUT' && msg.sender) {
+        const senderLabel = `${msg.cluster_id || ''}/${msg.sender}`;
+        const prefix = getColorForSender(msg.sender)(`${senderLabel.padEnd(25)} |`);
+        flushLineBuffer(prefix, msg.sender);
+      }
+    },
+    500
+  );
+}
+
+function parseIncrementalTaskLogLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('{')) {
+    return null;
+  }
+
+  let timestamp = Date.now();
+  let jsonContent = trimmed;
+
+  const timestampMatch = jsonContent.match(/^\[(\d{13})\](.*)$/);
+  if (timestampMatch) {
+    timestamp = parseInt(timestampMatch[1], 10);
+    jsonContent = timestampMatch[2];
+  }
+
+  if (!jsonContent.startsWith('{')) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(jsonContent);
+    if (parsed.type === 'system' && parsed.subtype === 'init') {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  return { timestamp, jsonContent };
+}
+
+function readNewTaskLogContent(logPath, lastSize) {
+  const stats = fs.statSync(logPath);
+  const currentSize = stats.size;
+  if (currentSize <= lastSize) {
+    return null;
+  }
+
+  const fd = fs.openSync(logPath, 'r');
+  const buffer = Buffer.alloc(currentSize - lastSize);
+  fs.readSync(fd, buffer, 0, buffer.length, lastSize);
+  fs.closeSync(fd);
+
+  return { content: buffer.toString('utf-8'), size: currentSize };
+}
+
+function extractTaskLogLines(content) {
+  return content.split('\n').filter((line) => line.trim());
+}
+
+function processTaskLogLines({ lines, agent, state, cluster, isActive, options, taskId }) {
+  for (const line of lines) {
+    const parsed = parseIncrementalTaskLogLine(line);
+    if (!parsed) {
+      continue;
+    }
+    const msg = buildTaskLogMessage({
+      taskId,
+      timestamp: parsed.timestamp,
+      jsonContent: parsed.jsonContent,
+      cluster,
+      agent,
+      iteration: state.iteration,
+    });
+
+    printMessage(msg, true, options.watch, isActive);
+    const senderLabel = `${cluster.id}/${agent.id}`;
+    const prefix = getColorForSender(agent.id)(`${senderLabel.padEnd(25)} |`);
+    flushLineBuffer(prefix, agent.id);
+  }
+}
+
+function pollTaskLogs(cluster, isActive, options, taskLogSizes) {
+  for (const agent of cluster.agents) {
+    const state = agent.getState();
+    const taskId = state.currentTaskId;
+    if (!taskId) {
+      continue;
+    }
+
+    const logPath = path.join(os.homedir(), '.claude-zeroshot', 'logs', `${taskId}.log`);
+    if (!fs.existsSync(logPath)) {
+      continue;
+    }
+
+    try {
+      const lastSize = taskLogSizes.get(taskId) || 0;
+      const update = readNewTaskLogContent(logPath, lastSize);
+      if (!update) {
+        continue;
+      }
+
+      const lines = extractTaskLogLines(update.content);
+      processTaskLogLines({
+        lines,
+        agent,
+        state,
+        cluster,
+        isActive,
+        options,
+        taskId,
+      });
+      taskLogSizes.set(taskId, update.size);
+    } catch {
+      // File read error - skip
+    }
+  }
+}
+
+function startTaskLogPolling(cluster, isActive, options) {
+  const taskLogSizes = new Map();
+  const interval = setInterval(() => {
+    pollTaskLogs(cluster, isActive, options, taskLogSizes);
+  }, 300);
+  return () => clearInterval(interval);
+}
+
+function followClusterLogs(cluster, id, dbMessages, isActive, options) {
+  setTerminalTitleForCluster(id, dbMessages);
+  console.log('\n--- Following logs (Ctrl+C to stop) ---\n');
+
+  const stopDbPoll = startClusterDbPolling(cluster, id, isActive, options);
+  const stopTaskLogPolling = startTaskLogPolling(cluster, isActive, options);
+
+  keepProcessAlive(() => {
+    stopDbPoll();
+    stopTaskLogPolling();
+    restoreTerminalTitle();
+  });
+}
+
+function showClusterLogsById(quietOrchestrator, id, options, limit) {
+  const cluster = getClusterOrExit(quietOrchestrator, id);
+  const isActive = getClusterActiveState(quietOrchestrator, id);
+  const { dbMessages, allMessages } = getClusterMessages(cluster, id);
+  printRecentMessages(allMessages, limit, isActive, options);
+
+  if (options.follow) {
+    followClusterLogs(cluster, id, dbMessages, isActive, options);
+  }
+}
+
 // Lazy-loaded orchestrator (quiet by default) - created on first use
 /** @type {import('../src/orchestrator') | null} */
 let _orchestrator = null;
@@ -1458,425 +1945,22 @@ program
   .option('-w, --watch', 'Watch mode: interactive TUI for tasks, high-level events for clusters')
   .action(async (id, options) => {
     try {
-      // If ID provided, detect type
       if (id) {
-        const { detectIdType } = require('../lib/id-detector');
-        const type = detectIdType(id);
-
-        if (!type) {
-          console.error(`ID not found: ${id}`);
-          process.exit(1);
-        }
-
-        if (type === 'task') {
-          // Show task logs
-          const { showLogs } = await import('../task-lib/commands/logs.js');
-          await showLogs(id, options);
+        const handled = await handleLogsById(id, options);
+        if (handled) {
           return;
         }
-        // Fall through to cluster logs below
       }
 
-      // === CLUSTER LOGS ===
-      const limit = parseInt(options.limit);
+      const limit = parseLogLimit(options);
       const quietOrchestrator = await Orchestrator.create({ quiet: true });
 
-      // No ID: show/follow ALL clusters
       if (!id) {
-        const allClusters = quietOrchestrator.listClusters();
-        const activeClusters = allClusters.filter((c) => c.state === 'running');
-
-        if (allClusters.length === 0) {
-          if (options.follow) {
-            console.log('No clusters found. Waiting for new clusters...\n');
-            console.log(chalk.dim('--- Waiting for clusters (Ctrl+C to stop) ---\n'));
-          } else {
-            console.log('No clusters found');
-            return;
-          }
-        }
-
-        // Track if multiple clusters
-        const multiCluster = allClusters.length > 1;
-
-        // Follow mode: show header
-        if (options.follow && allClusters.length > 0) {
-          if (activeClusters.length === 0) {
-            console.log(
-              chalk.dim(
-                `--- Showing history from ${allClusters.length} cluster(s), waiting for new activity (Ctrl+C to stop) ---\n`
-              )
-            );
-          } else if (activeClusters.length === 1) {
-            console.log(chalk.dim(`--- Following ${activeClusters[0].id} (Ctrl+C to stop) ---\n`));
-          } else {
-            console.log(
-              chalk.dim(
-                `--- Following ${activeClusters.length} active clusters (Ctrl+C to stop) ---`
-              )
-            );
-            for (const c of activeClusters) {
-              console.log(chalk.dim(`    • ${c.id} [${c.state}]`));
-            }
-            console.log('');
-          }
-        }
-
-        // Show recent messages from ALL clusters (history)
-        // In follow mode, poll will handle new messages - this shows initial history
-        for (const clusterInfo of allClusters) {
-          const cluster = quietOrchestrator.getCluster(clusterInfo.id);
-          if (cluster) {
-            const messages = cluster.messageBus.getAll(clusterInfo.id);
-            const recentMessages = messages.slice(-limit);
-            const isActive = clusterInfo.state === 'running';
-            for (const msg of recentMessages) {
-              printMessage(msg, clusterInfo.id, options.watch, isActive);
-            }
-          }
-        }
-
-        // Follow mode: poll SQLite for new messages (cross-process support)
-        if (options.follow) {
-          // Set terminal title based on task(s)
-          const taskTitles = [];
-          for (const clusterInfo of allClusters) {
-            const cluster = quietOrchestrator.getCluster(clusterInfo.id);
-            if (cluster) {
-              const messages = cluster.messageBus.getAll(clusterInfo.id);
-              const issueOpened = messages.find((m) => m.topic === 'ISSUE_OPENED');
-              if (issueOpened) {
-                taskTitles.push({
-                  id: clusterInfo.id,
-                  summary: formatTaskSummary(issueOpened, 30),
-                });
-              }
-            }
-          }
-          if (taskTitles.length === 1) {
-            setTerminalTitle(`zeroshot [${taskTitles[0].id}]: ${taskTitles[0].summary}`);
-          } else if (taskTitles.length > 1) {
-            setTerminalTitle(`zeroshot: ${taskTitles.length} clusters`);
-          } else {
-            setTerminalTitle('zeroshot: waiting...');
-          }
-
-          // In watch mode, show the initial task for each cluster (after history)
-          if (options.watch) {
-            for (const clusterInfo of allClusters) {
-              const cluster = quietOrchestrator.getCluster(clusterInfo.id);
-              if (cluster) {
-                const messages = cluster.messageBus.getAll(clusterInfo.id);
-                const issueOpened = messages.find((m) => m.topic === 'ISSUE_OPENED');
-                if (issueOpened) {
-                  const clusterLabel = multiCluster ? `[${clusterInfo.id}] ` : '';
-                  const taskSummary = formatTaskSummary(issueOpened);
-                  console.log(chalk.cyan(`${clusterLabel}Task: ${chalk.bold(taskSummary)}\n`));
-                }
-              }
-            }
-          }
-
-          const stopPollers = [];
-          const messageBuffer = [];
-
-          // Track cluster states (for dim coloring of inactive clusters)
-          const clusterStates = new Map(); // cluster_id -> state
-          for (const c of allClusters) {
-            clusterStates.set(c.id, c.state);
-          }
-
-          // === STATUS FOOTER: Live agent monitoring (same as foreground mode) ===
-          // Shows CPU, memory, network metrics for all agents at bottom of terminal
-          let statusFooter = null;
-          if ((options.follow || options.watch) && process.stdout.isTTY) {
-            statusFooter = new StatusFooter({
-              refreshInterval: 1000,
-              enabled: true,
-            });
-            // Set first cluster as the active one (for display purposes)
-            if (allClusters.length > 0) {
-              statusFooter.setCluster(allClusters[0].id);
-              statusFooter.setClusterState(clusterStates.get(allClusters[0].id) || 'running');
-            }
-            // Set module-level reference so safePrint/safeWrite route through footer
-            activeStatusFooter = statusFooter;
-            statusFooter.start();
-          }
-
-          // Buffered message handler - collects messages and sorts by timestamp
-          const flushMessages = () => {
-            if (messageBuffer.length === 0) return;
-            // Sort by timestamp
-            messageBuffer.sort((a, b) => a.timestamp - b.timestamp);
-
-            // Track senders with pending output
-            const sendersWithOutput = new Set();
-            for (const msg of messageBuffer) {
-              if (msg.topic === 'AGENT_OUTPUT' && msg.sender) {
-                sendersWithOutput.add(msg.sender);
-              }
-
-              // Update StatusFooter from polled AGENT_LIFECYCLE messages (cross-process)
-              if (msg.topic === 'AGENT_LIFECYCLE' && statusFooter) {
-                const data = msg.content?.data || {};
-                const event = data.event;
-                const agentId = data.agent || msg.sender;
-
-                if (event === 'STARTED') {
-                  statusFooter.updateAgent({
-                    id: agentId,
-                    state: AGENT_STATE.IDLE,
-                    pid: null,
-                    iteration: data.iteration || 0,
-                  });
-                } else if (event === 'TASK_STARTED') {
-                  statusFooter.updateAgent({
-                    id: agentId,
-                    state: AGENT_STATE.EXECUTING_TASK,
-                    pid: statusFooter.agents.get(agentId)?.pid || null,
-                    iteration: data.iteration || 0,
-                  });
-                } else if (event === 'PROCESS_SPAWNED') {
-                  // PROCESS_SPAWNED = proof of execution. If a process spawned, agent is executing.
-                  const current = statusFooter.agents.get(agentId) || { iteration: 0 };
-                  statusFooter.updateAgent({
-                    id: agentId,
-                    state: AGENT_STATE.EXECUTING_TASK,
-                    pid: data.pid,
-                    iteration: current.iteration,
-                  });
-                } else if (event === 'TASK_COMPLETED' || event === 'TASK_FAILED') {
-                  statusFooter.updateAgent({
-                    id: agentId,
-                    state: AGENT_STATE.IDLE,
-                    pid: null,
-                    iteration: data.iteration || 0,
-                  });
-                } else if (event === 'STOPPED') {
-                  statusFooter.removeAgent(agentId);
-                }
-              }
-
-              const isActive = clusterStates.get(msg.cluster_id) === 'running';
-              printMessage(msg, true, options.watch, isActive);
-            }
-
-            // Save cluster ID before clearing buffer
-            const firstClusterId = messageBuffer[0]?.cluster_id;
-            messageBuffer.length = 0;
-
-            // Flush pending line buffers for all senders that had output
-            // This ensures streaming text without newlines gets displayed
-            for (const sender of sendersWithOutput) {
-              const senderLabel = `${firstClusterId || ''}/${sender}`;
-              const prefix = getColorForSender(sender)(`${senderLabel.padEnd(25)} |`);
-              flushLineBuffer(prefix, sender);
-            }
-          };
-
-          // Flush buffer every 250ms
-          const flushInterval = setInterval(flushMessages, 250);
-
-          for (const clusterInfo of allClusters) {
-            const cluster = quietOrchestrator.getCluster(clusterInfo.id);
-            if (cluster) {
-              // Use polling for cross-process message detection
-              const stopPoll = cluster.ledger.pollForMessages(
-                clusterInfo.id,
-                (msg) => {
-                  messageBuffer.push(msg);
-                },
-                300
-              );
-              stopPollers.push(stopPoll);
-            }
-          }
-
-          const stopWatching = quietOrchestrator.watchForNewClusters((newCluster) => {
-            console.log(chalk.green(`\n✓ New cluster detected: ${newCluster.id}\n`));
-            // Track new cluster as active
-            clusterStates.set(newCluster.id, 'running');
-            // Poll new cluster's ledger
-            const stopPoll = newCluster.ledger.pollForMessages(
-              newCluster.id,
-              (msg) => {
-                messageBuffer.push(msg);
-              },
-              300
-            );
-            stopPollers.push(stopPoll);
-          });
-
-          keepProcessAlive(() => {
-            clearInterval(flushInterval);
-            flushMessages();
-            stopPollers.forEach((stop) => stop());
-            stopWatching();
-            // Stop status footer and restore terminal
-            if (statusFooter) {
-              statusFooter.stop();
-              activeStatusFooter = null;
-            }
-            // Restore terminal title
-            restoreTerminalTitle();
-          });
-        }
+        showAllClusterLogs(quietOrchestrator, options, limit);
         return;
       }
 
-      // Specific cluster ID provided
-      const cluster = quietOrchestrator.getCluster(id);
-      if (!cluster) {
-        console.error(`Cluster ${id} not found`);
-        process.exit(1);
-      }
-
-      // Check if cluster is active
-      const allClustersList = quietOrchestrator.listClusters();
-      const clusterInfo = allClustersList.find((c) => c.id === id);
-      const isActive = clusterInfo?.state === 'running';
-
-      // Get messages from cluster database
-      const dbMessages = cluster.messageBus.getAll(id);
-
-      // Get messages from agent task logs
-      const taskLogMessages = readAgentTaskLogs(cluster);
-
-      // Merge and sort by timestamp
-      const allMessages = [...dbMessages, ...taskLogMessages].sort(
-        (a, b) => a.timestamp - b.timestamp
-      );
-      const recentMessages = allMessages.slice(-limit);
-
-      // Print messages
-      for (const msg of recentMessages) {
-        printMessage(msg, true, options.watch, isActive);
-      }
-
-      // Follow mode for specific cluster (poll SQLite AND task logs)
-      if (options.follow) {
-        // Set terminal title based on task
-        const issueOpened = dbMessages.find((m) => m.topic === 'ISSUE_OPENED');
-        if (issueOpened) {
-          setTerminalTitle(`zeroshot [${id}]: ${formatTaskSummary(issueOpened, 30)}`);
-        } else {
-          setTerminalTitle(`zeroshot [${id}]`);
-        }
-
-        console.log('\n--- Following logs (Ctrl+C to stop) ---\n');
-
-        // Poll cluster database for new messages
-        const stopDbPoll = cluster.ledger.pollForMessages(
-          id,
-          (msg) => {
-            printMessage(msg, true, options.watch, isActive);
-
-            // Flush pending line buffer for streaming text without newlines
-            if (msg.topic === 'AGENT_OUTPUT' && msg.sender) {
-              const senderLabel = `${msg.cluster_id || ''}/${msg.sender}`;
-              const prefix = getColorForSender(msg.sender)(`${senderLabel.padEnd(25)} |`);
-              flushLineBuffer(prefix, msg.sender);
-            }
-          },
-          500
-        );
-
-        // Poll agent task logs for new output
-        const taskLogSizes = new Map(); // taskId -> last size
-        const pollTaskLogs = () => {
-          for (const agent of cluster.agents) {
-            const state = agent.getState();
-            const taskId = state.currentTaskId;
-            if (!taskId) continue;
-
-            const logPath = path.join(os.homedir(), '.claude-zeroshot', 'logs', `${taskId}.log`);
-            if (!fs.existsSync(logPath)) continue;
-
-            try {
-              const stats = fs.statSync(logPath);
-              const currentSize = stats.size;
-              const lastSize = taskLogSizes.get(taskId) || 0;
-
-              if (currentSize > lastSize) {
-                // Read new content
-                const fd = fs.openSync(logPath, 'r');
-                const buffer = Buffer.alloc(currentSize - lastSize);
-                fs.readSync(fd, buffer, 0, buffer.length, lastSize);
-                fs.closeSync(fd);
-
-                const newContent = buffer.toString('utf-8');
-                const lines = newContent.split('\n').filter((line) => line.trim());
-
-                for (const line of lines) {
-                  if (!line.trim().startsWith('{')) continue;
-
-                  try {
-                    // Parse timestamp-prefixed line
-                    let timestamp = Date.now();
-                    let jsonContent = line.trim();
-
-                    const timestampMatch = jsonContent.match(/^\[(\d{13})\](.*)$/);
-                    if (timestampMatch) {
-                      timestamp = parseInt(timestampMatch[1], 10);
-                      jsonContent = timestampMatch[2];
-                    }
-
-                    if (!jsonContent.startsWith('{')) continue;
-
-                    // Parse and validate JSON
-                    const parsed = JSON.parse(jsonContent);
-                    if (parsed.type === 'system' && parsed.subtype === 'init') continue;
-
-                    // Create message and print immediately
-                    const msg = {
-                      id: `task-${taskId}-${timestamp}`,
-                      timestamp,
-                      topic: 'AGENT_OUTPUT',
-                      sender: agent.id,
-                      receiver: 'broadcast',
-                      cluster_id: cluster.id,
-                      content: {
-                        text: jsonContent,
-                        data: {
-                          type: 'stdout',
-                          line: jsonContent,
-                          agent: agent.id,
-                          role: agent.role,
-                          iteration: state.iteration,
-                          fromTaskLog: true,
-                        },
-                      },
-                    };
-
-                    printMessage(msg, true, options.watch, isActive);
-
-                    // Flush line buffer
-                    const senderLabel = `${cluster.id}/${agent.id}`;
-                    const prefix = getColorForSender(agent.id)(`${senderLabel.padEnd(25)} |`);
-                    flushLineBuffer(prefix, agent.id);
-                  } catch {
-                    // Skip invalid JSON
-                  }
-                }
-
-                taskLogSizes.set(taskId, currentSize);
-              }
-            } catch {
-              // File read error - skip
-            }
-          }
-        };
-
-        // Poll task logs every 300ms (same as agent-wrapper)
-        const taskLogInterval = setInterval(pollTaskLogs, 300);
-
-        keepProcessAlive(() => {
-          stopDbPoll();
-          clearInterval(taskLogInterval);
-          restoreTerminalTitle();
-        });
-      }
+      showClusterLogsById(quietOrchestrator, id, options, limit);
     } catch (error) {
       console.error('Error viewing logs:', error.message);
       process.exit(1);
