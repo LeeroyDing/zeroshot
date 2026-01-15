@@ -207,17 +207,14 @@ function collectCannotValidateCriteria(prevValidations) {
   const cannotValidateCriteria = [];
   for (const msg of prevValidations) {
     const criteriaResults = msg.content?.data?.criteriaResults;
-    if (Array.isArray(criteriaResults)) {
-      for (const cr of criteriaResults) {
-        if (cr.status === 'CANNOT_VALIDATE' && cr.id) {
-          if (!cannotValidateCriteria.find((c) => c.id === cr.id)) {
-            cannotValidateCriteria.push({
-              id: cr.id,
-              reason: cr.reason || 'No reason provided',
-            });
-          }
-        }
-      }
+    if (!Array.isArray(criteriaResults)) continue;
+    for (const cr of criteriaResults) {
+      if (cr.status !== 'CANNOT_VALIDATE' || !cr.id) continue;
+      if (cannotValidateCriteria.find((c) => c.id === cr.id)) continue;
+      cannotValidateCriteria.push({
+        id: cr.id,
+        reason: cr.reason || 'No reason provided',
+      });
     }
   }
   return cannotValidateCriteria;
