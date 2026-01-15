@@ -749,66 +749,13 @@ class Orchestrator {
 
     try {
       // Fetch input (GitHub issue, file, or text)
-      let inputData;
-      if (input.issue) {
-        inputData = await GitHub.fetchIssue(input.issue);
-        // Log clickable issue link
-        if (inputData.url) {
-          this._log(`[Orchestrator] Issue: ${inputData.url}`);
-        }
-      } else if (input.file) {
-        inputData = GitHub.createFileInput(input.file);
-        this._log(`[Orchestrator] File: ${input.file}`);
-      } else if (input.text) {
-        inputData = GitHub.createTextInput(input.text);
-      } else {
-        throw new Error('Either issue, file, or text input is required');
-      }
+      const inputData = await this._resolveInputData(input);
 
       // Inject git-pusher agent if --pr is set (replaces completion-detector)
-      if (options.autoPr) {
-        // Remove completion-detector by ID (git-pusher handles completion + PR)
-        config.agents = config.agents.filter((a) => a.id !== 'completion-detector');
-
-        // Load and configure git-pusher agent (use fs.readFileSync to avoid require cache)
-        const gitPusherPath = path.join(__dirname, 'agents', 'git-pusher-agent.json');
-        const gitPusherConfig = JSON.parse(fs.readFileSync(gitPusherPath, 'utf8'));
-
-        // Inject issue context placeholders
-        gitPusherConfig.prompt = gitPusherConfig.prompt.replace(
-          /\{\{issue_number\}\}/g,
-          inputData.number || 'unknown'
-        );
-        gitPusherConfig.prompt = gitPusherConfig.prompt.replace(
-          /\{\{issue_title\}\}/g,
-          inputData.title || 'Implementation'
-        );
-
-        config.agents.push(gitPusherConfig);
-        this._log(`[Orchestrator] Injected git-pusher agent (creates PR and auto-merges)`);
-      }
+      this._applyAutoPrConfig(config, inputData, options);
 
       // Inject workers instruction if --workers explicitly provided and > 1
-      const workersCount = process.env.ZEROSHOT_WORKERS
-        ? parseInt(process.env.ZEROSHOT_WORKERS)
-        : 0;
-      if (workersCount > 1) {
-        const workerAgent = config.agents.find((a) => a.id === 'worker');
-        if (workerAgent) {
-          const instruction = `PARALLELIZATION: Use up to ${workersCount} sub-agents to parallelize your work where appropriate.\n\n`;
-
-          if (!workerAgent.prompt) {
-            workerAgent.prompt = instruction;
-          } else if (typeof workerAgent.prompt === 'string') {
-            workerAgent.prompt = instruction + workerAgent.prompt;
-          } else if (workerAgent.prompt.system) {
-            workerAgent.prompt.system = instruction + workerAgent.prompt.system;
-          }
-          this._log(
-            `[Orchestrator] Injected parallelization instruction (workers=${workersCount})`
-          );
-        }
-      }
+      this._applyWorkerInstruction(config);
 
       // Initialize agents with optional mock injection
       // Check agent type: regular agent or subcluster
@@ -1187,6 +1134,75 @@ class Orchestrator {
       console.error(`Cluster ${clusterId} failed to start:`, error);
       throw error;
     }
+  }
+
+  async _resolveInputData(input) {
+    if (input.issue) {
+      const inputData = await GitHub.fetchIssue(input.issue);
+      if (inputData.url) {
+        this._log(`[Orchestrator] Issue: ${inputData.url}`);
+      }
+      return inputData;
+    }
+
+    if (input.file) {
+      const inputData = GitHub.createFileInput(input.file);
+      this._log(`[Orchestrator] File: ${input.file}`);
+      return inputData;
+    }
+
+    if (input.text) {
+      return GitHub.createTextInput(input.text);
+    }
+
+    throw new Error('Either issue, file, or text input is required');
+  }
+
+  _applyAutoPrConfig(config, inputData, options) {
+    if (!options.autoPr) {
+      return;
+    }
+
+    config.agents = config.agents.filter((a) => a.id !== 'completion-detector');
+
+    const gitPusherPath = path.join(__dirname, 'agents', 'git-pusher-agent.json');
+    const gitPusherConfig = JSON.parse(fs.readFileSync(gitPusherPath, 'utf8'));
+
+    gitPusherConfig.prompt = gitPusherConfig.prompt.replace(
+      /\{\{issue_number\}\}/g,
+      inputData.number || 'unknown'
+    );
+    gitPusherConfig.prompt = gitPusherConfig.prompt.replace(
+      /\{\{issue_title\}\}/g,
+      inputData.title || 'Implementation'
+    );
+
+    config.agents.push(gitPusherConfig);
+    this._log(`[Orchestrator] Injected git-pusher agent (creates PR and auto-merges)`);
+  }
+
+  _applyWorkerInstruction(config) {
+    const workersCount = process.env.ZEROSHOT_WORKERS ? parseInt(process.env.ZEROSHOT_WORKERS) : 0;
+    if (workersCount <= 1) {
+      return;
+    }
+
+    const workerAgent = config.agents.find((a) => a.id === 'worker');
+    if (!workerAgent) {
+      return;
+    }
+
+    const instruction = `PARALLELIZATION: Use up to ${workersCount} sub-agents to parallelize your work where appropriate.\n\n`;
+
+    if (!workerAgent.prompt) {
+      workerAgent.prompt = instruction;
+    } else if (typeof workerAgent.prompt === 'string') {
+      workerAgent.prompt = instruction + workerAgent.prompt;
+    } else if (workerAgent.prompt.system) {
+      workerAgent.prompt.system = instruction + workerAgent.prompt.system;
+    }
+
+    this._log(`[Orchestrator] Injected parallelization instruction (workers=${workersCount})`);
   }
 
   /**
