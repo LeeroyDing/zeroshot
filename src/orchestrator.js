@@ -722,14 +722,14 @@ class Orchestrator {
       // Check agent type: regular agent or subcluster
       // CRITICAL: Inject cwd into each agent config for proper working directory
       // In worktree mode, agents run in the worktree path (not original cwd)
-      this._initializeClusterAgents(
+      this._initializeClusterAgents({
         config,
         cluster,
         messageBus,
         options,
         isolationManager,
-        clusterId
-      );
+        clusterId,
+      });
 
       // ========================================================================
       // CRITICAL ORDERING INVARIANT (Issue #31 - Subscription Race Condition)
@@ -1043,7 +1043,7 @@ class Orchestrator {
     }
   }
 
-  _initializeClusterAgents(config, cluster, messageBus, options, isolationManager, clusterId) {
+  _initializeClusterAgents({ config, cluster, messageBus, options, isolationManager, clusterId }) {
     const agentCwd = cluster.worktree ? cluster.worktree.path : options.cwd || process.cwd();
 
     for (const agentConfig of config.agents) {
