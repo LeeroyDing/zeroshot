@@ -8,7 +8,7 @@ const GitHubProvider = require('./github-provider');
 const GitLabProvider = require('./gitlab-provider');
 const JiraProvider = require('./jira-provider');
 const AzureDevOpsProvider = require('./azure-devops-provider');
-const { detectGitContext } = require('../../lib/git-remote-utils');
+const { detectGitContext } = require('../../lib/git-utils');
 
 /** @type {Map<string, typeof IssueProvider>} */
 const providers = new Map();

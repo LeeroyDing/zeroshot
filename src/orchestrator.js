@@ -762,7 +762,7 @@ class Orchestrator {
 
       // Detect git platform for --pr mode (independent of issue provider)
       if (options.autoPr) {
-        const { detectGitContext } = require('../lib/git-remote-utils');
+        const { detectGitContext } = require('../lib/git-utils');
         const gitContext = detectGitContext(options.cwd);
         cluster.gitPlatform = gitContext?.provider || null;
 
@@ -1229,7 +1229,7 @@ class Orchestrator {
 
     // Detect git platform (independent of issue provider)
     const { getPlatformForPR } = require('./issue-providers');
-    const { detectGitContext } = require('../lib/git-remote-utils');
+    const { detectGitContext } = require('../lib/git-utils');
 
     let platform;
     try {

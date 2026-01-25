@@ -20,7 +20,7 @@ const {
 } = require('../lib/settings/claude-auth.js');
 const { loadSettings, getClaudeCommand } = require('../lib/settings.js');
 const { normalizeProviderName } = require('../lib/provider-names');
-const { detectGitContext } = require('../lib/git-remote-utils');
+const { detectGitContext } = require('../lib/git-utils');
 
 /**
  * Validation result
@@ -434,17 +434,9 @@ function validateDockerRequirement() {
   return errors;
 }
 
-function isGitRepository() {
-  try {
-    execSync('git rev-parse --git-dir', { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function validateGitRequirement() {
-  if (isGitRepository()) {
+  const { getRepoRoot } = require('../lib/vcs');
+  if (getRepoRoot()) {
     return [];
   }
 

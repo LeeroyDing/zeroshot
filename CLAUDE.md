@@ -49,7 +49,7 @@ IS THIS HOW A SENIOR STAFF ARCHITECT WOULD DO IT? ACT LIKE ONE.
 | Docker mounts/env        | `lib/docker-config.js`              |
 | Container lifecycle      | `src/isolation-manager.js`          |
 | Issue providers          | `src/issue-providers/`              |
-| Git remote detection     | `lib/git-remote-utils.js`           |
+| Git remote detection     | `lib/git-utils.js`                  |
 | Input helpers            | `src/input-helpers.js`              |
 | Settings                 | `lib/settings.js`                   |
 

@@ -9,7 +9,7 @@
  */
 
 const assert = require('assert');
-const { parseGitRemoteUrl, detectGitContext } = require('../../lib/git-remote-utils');
+const { parseGitRemoteUrl, detectGitContext } = require('../../lib/git-utils');
 
 describe('Git Remote Utils', function () {
   registerParseGitRemoteUrlTests();

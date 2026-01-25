@@ -5,7 +5,7 @@
 
 const IssueProvider = require('./base-provider');
 const { execSync } = require('../lib/safe-exec');
-const { detectGitContext } = require('../../lib/git-remote-utils');
+const { detectGitContext } = require('../../lib/git-utils');
 
 class AzureDevOpsProvider extends IssueProvider {
   static id = 'azure-devops';
