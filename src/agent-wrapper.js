@@ -405,9 +405,9 @@ class AgentWrapper {
    * Build context from ledger based on contextStrategy
    * @private
    */
-  _buildContext(triggeringMessage) {
+  async _buildContext(triggeringMessage) {
     const previousAgentStart = this.lastAgentStartTime;
-    const context = buildContext({
+    const context = await buildContext({
       id: this.id,
       role: this.role,
       iteration: this.iteration,

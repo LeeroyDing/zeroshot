@@ -13,7 +13,7 @@ Message-passing primitives for multi-agent workflows. **Install:** `npm i -g @co
 | **Never ask questions**            | Agents run non-interactively | `AskUserQuestion`, waiting for confirmation | Make autonomous decisions                        |
 | **Never edit CLAUDE.md**           | Context file for Claude Code | Editing this file                           | Read-only unless explicitly asked to update docs |
 
-**Worker git operations:** Allowed with isolation (`--worktree`, `--docker`, `--pr`, `--ship`). Forbidden without isolation (auto-injected restriction).
+**Worker git/jj operations:** Allowed with isolation (`--worktree`, `--docker`, `--pr`, `--ship`). Forbidden without isolation (auto-injected restriction).
 
 **Read-only safe:** `zeroshot list`, `zeroshot status`, `zeroshot logs`
 
@@ -49,7 +49,7 @@ IS THIS HOW A SENIOR STAFF ARCHITECT WOULD DO IT? ACT LIKE ONE.
 | Docker mounts/env        | `lib/docker-config.js`              |
 | Container lifecycle      | `src/isolation-manager.js`          |
 | Issue providers          | `src/issue-providers/`              |
-| Git remote detection     | `lib/git-remote-utils.js`           |
+| VCS remote detection     | `lib/vcs/factory.js`           |
 | Input helpers            | `src/input-helpers.js`              |
 | Settings                 | `lib/settings.js`                   |
 
@@ -87,14 +87,14 @@ zeroshot settings                 # View/modify settings
 
 **Settings:** `maxModel` (opus/sonnet/haiku cost ceiling), `defaultConfig`, `logLevel`
 
-**Git Auto-Detection:** Bare numbers (e.g., `123`) automatically detect provider from git remote URL. No configuration needed when working in a git repository.
+**VCS Auto-Detection:** Bare numbers (e.g., `123`) automatically detect provider from remote URL. No configuration needed when working in a git or jj repository.
 
 Priority order for bare numbers:
 
 1. Force flags (`--github`, `--gitlab`, `--devops`) - Explicit CLI override
-2. Git remote detection - Automatic from `git remote get-url origin`
+2. VCS remote detection - Automatic from current repository
 3. Settings (`defaultIssueSource`) - Global user preference
-4. Legacy fallback - GitHub (only when no git context and no settings)
+4. Legacy fallback - GitHub (only when no VCS context and no settings)
 
 ## Architecture
 
@@ -174,7 +174,7 @@ Classifies tasks on **Complexity × TaskType**, routes to parameterized template
 | Worktree | `--worktree` | Quick isolated work, PR workflows                  |
 | Docker   | `--docker`   | Full isolation, risky experiments, parallel agents |
 
-**Worktree:** Lightweight git branch isolation (<1s setup).
+**Worktree:** Lightweight worktree isolation (<1s setup).
 
 **Docker:** Fresh git clone in container, credentials mounted, auto-cleanup.
 
@@ -370,7 +370,7 @@ gh pr create --base main --head dev --title "Release"  # dev → main (allowed)
 
 ## 🔴 BEHAVIORAL RULES
 
-### Git Workflow (Contributing to Zeroshot)
+### VCS Workflow (Contributing to Zeroshot)
 
 **Merge queue enforces CI on rebased code before merge.**
 
@@ -397,10 +397,17 @@ Merge to dev (only if CI passes on rebased code)
 **Commands:**
 
 ```bash
-# Feature work
+# Feature work (git)
 git switch -c feat/my-feature
 # ... make changes ...
 git push -u origin feat/my-feature
+
+# Feature work (jj)
+jj new feat/my-feature
+# ... make changes ...
+jj git push --change feat/my-feature
+
+# Common
 gh pr create --base dev
 gh pr merge --auto --squash
 
@@ -409,17 +416,20 @@ gh pr create --base main --head dev --title "Release"
 # → CI passes → merge → semantic-release publishes
 ```
 
-**Setup merge queue (admin):** `./scripts/setup-merge-queue.sh`
-
 ### Git Safety (Multi-Agent Context)
 
 **CRITICAL: Use WIP commits instead of stashing:**
 
 ```bash
+# git
 git add -A && git commit -m "WIP: save work"  # Instead of git stash
 git switch <branch>                            # Instead of git checkout <branch>
 git restore <file>                             # Instead of git checkout -- <file>
-git restore --staged <file>                    # Unstage without discarding
+
+# jj
+jj describe -m "WIP: save work"
+jj new <branch>
+jj restore <file>
 ```
 
 **Rationale:** Stashing hides work from other agents. WIP commits are visible, traceable, and never lost.

@@ -5,7 +5,7 @@
 
 const IssueProvider = require('./base-provider');
 const { execSync } = require('../lib/safe-exec');
-const { detectGitContext } = require('../../lib/git-remote-utils');
+const { getVcs } = require('../../lib/vcs/factory');
 
 class AzureDevOpsProvider extends IssueProvider {
   static id = 'azure-devops';
@@ -147,9 +147,9 @@ class AzureDevOpsProvider extends IssueProvider {
     };
   }
 
-  fetchIssue(identifier, settings) {
+  async fetchIssue(identifier, settings) {
     try {
-      const { workItemId, org, project: _project } = this._parseIdentifier(identifier, settings);
+      const { workItemId, org, project: _project } = await this._parseIdentifier(identifier, settings);
 
       if (!org) {
         throw new Error(
@@ -174,7 +174,7 @@ class AzureDevOpsProvider extends IssueProvider {
    * Uses git context for auto-detection when settings not provided
    * @private
    */
-  _parseIdentifier(identifier, settings) {
+  async _parseIdentifier(identifier, settings) {
     // URL format: https://dev.azure.com/org/project/_workitems/edit/123
     // Use [^/]+ to match any characters except /, supporting spaces and special chars
     const urlMatch = identifier.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_workitems\/edit\/(\d+)/);
@@ -205,7 +205,8 @@ class AzureDevOpsProvider extends IssueProvider {
 
       // If settings don't have org, try git context
       if (!org) {
-        const gitContext = detectGitContext();
+        const vcs = await getVcs();
+        const gitContext = await vcs.detectContext();
         if (gitContext?.provider === 'azure-devops') {
           org = gitContext.azureOrg;
           project = gitContext.azureProject;

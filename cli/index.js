@@ -157,14 +157,11 @@ const PACKAGE_ROOT = path.resolve(__dirname, '..');
  * Critical for CWD propagation - agents must work in the target repo, not where CLI was invoked
  * @returns {string} Git repo root, or process.cwd() if not in a git repo
  */
-function detectGitRepoRoot() {
-  const { execSync } = require('child_process');
+async function detectVcsRepoRoot() {
+  const { getVcs } = require('../lib/vcs/factory');
   try {
-    const root = execSync('git rev-parse --show-toplevel', {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    return root;
+    const vcs = await getVcs();
+    return await vcs.getRoot();
   } catch {
     // Not in a git repo - use current directory
     return process.cwd();
@@ -243,14 +240,14 @@ function resolveProviderOverride(options, settings) {
   );
 }
 
-function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
+async function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
   // Detect which issue provider tool is needed
   let issueProvider = null;
   let targetHost = null;
 
   if (input.issue) {
     const { detectProvider: detectIssueProvider } = require('../src/issue-providers');
-    const ProviderClass = detectIssueProvider(input.issue, settings, forceProvider);
+    const ProviderClass = await detectIssueProvider(input.issue, settings, forceProvider);
     if (ProviderClass) {
       issueProvider = ProviderClass.id;
     }
@@ -267,7 +264,7 @@ function runClusterPreflight({ input, options, providerOverride, settings, force
     }
   }
 
-  requirePreflight({
+  await requirePreflight({
     requireGh: issueProvider === 'github', // gh CLI required for GitHub
     requireDocker: options.docker,
     requireGit: options.worktree,
@@ -321,7 +318,7 @@ function spawnDetachedCluster(options, clusterId) {
   const { spawn } = require('child_process');
   printDetachedClusterStart(options, clusterId);
   const logFd = createDaemonLogFile(clusterId);
-  const targetCwd = detectGitRepoRoot();
+  const targetCwd = await detectVcsRepoRoot();
   const daemon = spawn(process.execPath, process.argv.slice(1), {
     detached: true,
     stdio: ['ignore', logFd, logFd],
@@ -463,7 +460,7 @@ function buildStartOptions({
   modelOverride,
   forceProvider,
 }) {
-  const targetCwd = process.env.ZEROSHOT_CWD || detectGitRepoRoot();
+  const targetCwd = process.env.ZEROSHOT_CWD || await detectVcsRepoRoot();
   return {
     clusterId,
     cwd: targetCwd,
@@ -2443,7 +2440,7 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps)
       const providerOverride = resolveProviderOverride(options, settings);
 
       // Preflight checks
-      runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
+      await runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
 
       const { generateName } = require('../src/name-generator');
 

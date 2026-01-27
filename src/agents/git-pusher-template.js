@@ -1,3 +1,5 @@
+/* eslint-disable max-len */
+
 /**
  * Git Pusher Agent Template
  *
@@ -73,11 +75,11 @@ const PLATFORM_CONFIGS = {
 };
 
 /**
- * Generate the prompt for a specific platform
+ * Generate the prompt for a specific platform using Git
  * @param {Object} config - Platform configuration from PLATFORM_CONFIGS
  * @returns {string} The complete prompt with platform-specific commands
  */
-function generatePrompt(config) {
+function generateGitPrompt(config) {
   const {
     prName,
     prNameLower,
@@ -115,171 +117,4 @@ If auto-complete is not available or you need to merge immediately:`
   const finalOutputNote = requiresPrIdExtraction
     ? `ONLY after the PR is created and auto-complete is set, output:
 \`\`\`json
-{"${outputFields.urlField}": "${prUrlExample}", "${outputFields.numberField}": 123, "merged": false, "auto_complete": true}
-\`\`\`
-
-If truly no changes exist, output:
-\`\`\`json
-{"${outputFields.urlField}": null, "${outputFields.numberField}": null, "merged": false, "auto_complete": false}
-\`\`\``
-    : `ONLY after the ${prName} is MERGED, output:
-\`\`\`json
-{"${outputFields.urlField}": "${prUrlExample}", "${outputFields.numberField}": 123, "merged": true}
-\`\`\`
-
-If truly no changes exist, output:
-\`\`\`json
-{"${outputFields.urlField}": null, "${outputFields.numberField}": null, "merged": false}
-\`\`\``;
-
-  return `🚨 CRITICAL: ALL VALIDATORS APPROVED. YOU MUST CREATE A ${prName} AND GET IT MERGED. DO NOT STOP UNTIL THE ${prName} IS MERGED. 🚨
-
-## MANDATORY STEPS - EXECUTE EACH ONE IN ORDER - DO NOT SKIP ANY STEP
-
-### STEP 1: Stage ALL changes (MANDATORY)
-\`\`\`bash
-git add -A
-\`\`\`
-Run this command. Do not skip it.
-
-### STEP 2: Check what's staged
-\`\`\`bash
-git status
-\`\`\`
-Run this. If nothing to commit, output JSON with ${outputFields.urlField}: null and stop.
-
-### STEP 3: Commit the changes (MANDATORY if there are changes)
-\`\`\`bash
-git commit -m "feat: implement #{{issue_number}} - {{issue_title}}"
-\`\`\`
-Run this command. Do not skip it.
-
-### STEP 4: Push to origin (MANDATORY)
-\`\`\`bash
-git push -u origin HEAD
-\`\`\`
-Run this. If it fails, check the error and fix it.
-
-⚠️ AFTER PUSH YOU ARE NOT DONE! CONTINUE TO STEP 5! ⚠️
-
-### STEP 5: CREATE THE ${prName.toUpperCase()} (MANDATORY - YOU MUST RUN THIS COMMAND)
-\`\`\`bash
-${createCmd}
-\`\`\`
-🚨 YOU MUST RUN \`${createCmd.split(' ').slice(0, 3).join(' ')}\`! Outputting a link is NOT creating a ${prName}! 🚨
-The push output shows a "Create a ${prNameLower}" link - IGNORE IT.
-You MUST run the \`${createCmd.split(' ').slice(0, 3).join(' ')}\` command above.${requiresPrIdExtraction ? '' : ` Save the actual ${prName} URL from the output.`}${azurePrIdNote}
-
-⚠️ AFTER ${prName} CREATION YOU ARE NOT DONE! CONTINUE TO STEP 6! ⚠️
-
-### STEP 6: ${mergeDescription}
-\`\`\`bash
-${mergeCmd}
-\`\`\`
-${mergeExplanation}
-\`\`\`bash
-${mergeFallbackCmd}
-\`\`\`
-
-🚨 IF MERGE FAILS DUE TO CONFLICTS - YOU MUST RESOLVE THEM:
-a) Pull latest main and rebase:
-   \`\`\`bash
-   git fetch origin main
-   git rebase origin/main
-   \`\`\`
-b) If conflicts appear - RESOLVE THEM IMMEDIATELY:
-   - Read the conflicting files
-   - Make intelligent decisions about what code to keep
-   - Edit the files to resolve conflicts
-   - \`git add <resolved-files>\`
-   - \`git rebase --continue\`
-c) Force push the resolved branch:
-   \`\`\`bash
-   git push --force-with-lease
-   \`\`\`
-d) Retry merge:
-   \`\`\`bash
-   ${mergeFallbackCmd}
-   \`\`\`
-
-REPEAT UNTIL MERGED. DO NOT GIVE UP. DO NOT SKIP. THE ${prName} MUST BE ${requiresPrIdExtraction ? 'SET TO AUTO-COMPLETE' : 'MERGED'}.
-If merge is blocked by CI, wait and retry. ${requiresPrIdExtraction ? 'The auto-complete will merge when CI passes.' : 'If blocked by reviews, set auto-merge.'}
-
-## CRITICAL RULES
-- Execute EVERY step in order (1, 2, 3, 4, 5, 6)
-- Do NOT skip git add -A
-- Do NOT skip git commit
-- Do NOT skip ${createCmd.split(' ').slice(0, 3).join(' ')} - THE TASK IS NOT DONE UNTIL ${prName} EXISTS
-- Do NOT skip ${mergeCmd.split(' ').slice(0, 4).join(' ')} - THE TASK IS NOT DONE UNTIL ${postMergeStatus}${requiresPrIdExtraction ? '\n- MUST extract PR ID from step 5 output to use in step 6' : ''}
-- If push fails, debug and fix it
-- If ${prName} creation fails, debug and fix it
-- If ${requiresPrIdExtraction ? 'auto-complete' : 'merge'} fails, debug and fix it
-- DO NOT OUTPUT JSON UNTIL ${postMergeStatus}
-- A link from git push is NOT a ${prName} - you must run ${createCmd.split(' ').slice(0, 3).join(' ')}
-
-## Final Output
-${finalOutputNote}`;
-}
-
-/**
- * Generate a git-pusher agent configuration for a specific platform
- *
- * @param {string} platform - Platform ID ('github', 'gitlab', 'azure-devops')
- * @returns {Object} Agent configuration object
- * @throws {Error} If platform is not supported
- */
-function generateGitPusherAgent(platform) {
-  const config = PLATFORM_CONFIGS[platform];
-
-  if (!config) {
-    const supported = Object.keys(PLATFORM_CONFIGS).join(', ');
-    throw new Error(`Unsupported platform '${platform}'. Supported: ${supported}`);
-  }
-
-  return {
-    id: 'git-pusher',
-    role: 'completion-detector',
-    modelLevel: 'level2',
-    triggers: [
-      {
-        topic: 'VALIDATION_RESULT',
-        logic: {
-          engine: 'javascript',
-          script: SHARED_TRIGGER_SCRIPT,
-        },
-        action: 'execute_task',
-      },
-    ],
-    prompt: generatePrompt(config),
-    output: {
-      topic: 'PR_CREATED',
-      publishAfter: 'CLUSTER_COMPLETE',
-    },
-  };
-}
-
-/**
- * Get list of supported platforms for git-pusher
- * @returns {string[]} Array of platform IDs
- */
-function getSupportedPlatforms() {
-  return Object.keys(PLATFORM_CONFIGS);
-}
-
-/**
- * Check if a platform supports git-pusher (PR/MR creation)
- * @param {string} platform - Platform ID
- * @returns {boolean}
- */
-function isPlatformSupported(platform) {
-  return platform in PLATFORM_CONFIGS;
-}
-
-module.exports = {
-  generateGitPusherAgent,
-  getSupportedPlatforms,
-  isPlatformSupported,
-  // Export for testing
-  SHARED_TRIGGER_SCRIPT,
-  PLATFORM_CONFIGS,
-};
+{\

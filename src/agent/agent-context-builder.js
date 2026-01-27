@@ -87,7 +87,7 @@ function buildGitOperationsSection() {
   let context = `## 🚫 GIT OPERATIONS - FORBIDDEN\n\n`;
   context += `NEVER commit, push, or create PRs. You only modify files.\n`;
   context += `The git-pusher agent handles ALL git operations AFTER validators approve.\n\n`;
-  context += `- ❌ NEVER run: git add, git commit, git push, gh pr create\n`;
+  context += `- ❌ NEVER run: git/jj commands like add, commit, push. Use the provided tools.\n`;
   context += `- ❌ NEVER suggest committing changes\n`;
   context += `- ✅ Only modify files and publish your completion message when done\n\n`;
   return context;
@@ -402,7 +402,7 @@ function applyLegacyMaxTokens(context, strategy) {
  * @param {object} [params.isolation] - Docker isolation state (if running in Docker mode)
  * @returns {string} Assembled context string
  */
-function buildContext({
+async function buildContext({
   id,
   role,
   iteration,

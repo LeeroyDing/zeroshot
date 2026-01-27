@@ -8,7 +8,7 @@ const GitHubProvider = require('./github-provider');
 const GitLabProvider = require('./gitlab-provider');
 const JiraProvider = require('./jira-provider');
 const AzureDevOpsProvider = require('./azure-devops-provider');
-const { detectGitContext } = require('../../lib/git-remote-utils');
+const { getVcs } = require('../../lib/vcs/factory');
 
 /** @type {Map<string, typeof IssueProvider>} */
 const providers = new Map();
@@ -37,14 +37,15 @@ function registerProvider(ProviderClass) {
  *   - object: use provided git context
  * @returns {typeof IssueProvider|null}
  */
-function detectProvider(input, settings, forceProvider = null, gitContextOverride = undefined) {
+async function detectProvider(input, settings, forceProvider = null, gitContextOverride = undefined) {
   // Force flag takes precedence
   if (forceProvider) {
     return providers.get(forceProvider) || null;
   }
 
   // Use provided gitContext or auto-detect
-  const gitContext = gitContextOverride === undefined ? detectGitContext() : gitContextOverride;
+  const vcs = await getVcs();
+  const gitContext = gitContextOverride === undefined ? await vcs.detectContext() : gitContextOverride;
 
   // Auto-detect by checking each provider's detectIdentifier
   for (const ProviderClass of providers.values()) {
@@ -90,7 +91,7 @@ function listPRProviders() {
  * This is the unified replacement for platform-detector.js
  *
  * @param {string} [cwd=process.cwd()] - Working directory
- * @returns {string} Platform ID ('github', 'gitlab', 'azure-devops')
+ * @returns {Promise<string>} Platform ID ('github', 'gitlab', 'azure-devops')
  * @throws {Error} If platform cannot be determined or doesn't support PRs
  *
  * @example
@@ -101,8 +102,9 @@ function listPRProviders() {
  * // In a GitLab repo with Jira issue
  * getPlatformForPR() // → 'gitlab' (creates GitLab MR, not related to Jira)
  */
-function getPlatformForPR(cwd = process.cwd()) {
-  const gitContext = detectGitContext(cwd);
+async function getPlatformForPR(cwd = process.cwd()) {
+  const vcs = await getVcs();
+  const gitContext = await vcs.detectContext(cwd);
 
   if (!gitContext?.provider) {
     throw new Error(

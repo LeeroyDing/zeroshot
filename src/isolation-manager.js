@@ -20,6 +20,7 @@ const { CLAUDE_AUTH_ENV_VARS, resolveClaudeAuth } = require('../lib/settings/cla
 const { normalizeProviderName } = require('../lib/provider-names');
 const { resolveMounts, resolveEnvs, expandEnvPatterns } = require('../lib/docker-config');
 const { getProvider } = require('./providers');
+const { getVcs } = require('../lib/vcs/factory');
 
 /**
  * Escape a string for safe use in shell commands
@@ -138,7 +139,7 @@ class IsolationManager {
   }
 
   async _prepareIsolatedWorkspace(clusterId, workDir, reuseExisting) {
-    if (!this._isGitRepo(workDir)) {
+    if (!await this._isVcsRepo(workDir)) {
       return workDir;
     }
 
@@ -651,6 +652,7 @@ class IsolationManager {
     // Copy files (excluding .git and common build artifacts)
     await this._copyDirExcluding(sourceDir, isolatedPath, [
       '.git',
+      '.jj',
       'node_modules',
       '.next',
       'dist',
@@ -671,54 +673,9 @@ class IsolationManager {
       'Thumbs.db',
     ]);
 
-    // Get remote URL from original repo (for PR creation)
-    let remoteUrl = null;
-    try {
-      remoteUrl = execSync('git remote get-url origin', {
-        cwd: sourceDir,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      }).trim();
-    } catch {
-      // No remote configured in source
-    }
-
-    // Initialize fresh git repo with all setup in a single batched command
-    // This reduces ~500ms overhead (5 execSync calls @ ~100ms each) to ~100ms (1 call)
-    // Issue #22: Batch git operations for 5-10% startup reduction
+    const vcs = await getVcs();
     const branchName = `zeroshot/${clusterId}`;
-
-    // Build authenticated remote URL if source had one (needed for git push / PR creation)
-    let authRemoteUrl = null;
-    if (remoteUrl) {
-      authRemoteUrl = remoteUrl;
-      const token = this._getGhToken();
-      if (token && remoteUrl.startsWith('https://github.com/')) {
-        // Convert https://github.com/org/repo.git to https://x-access-token:TOKEN@github.com/org/repo.git
-        authRemoteUrl = remoteUrl.replace(
-          'https://github.com/',
-          `https://x-access-token:${token}@github.com/`
-        );
-      }
-    }
-
-    // Batch all git operations into a single shell command
-    // Using --allow-empty on commit to handle edge case of empty directories
-    const gitCommands = [
-      'git init',
-      authRemoteUrl ? `git remote add origin ${escapeShell(authRemoteUrl)}` : null,
-      'git add -A',
-      'git commit -m "Initial commit (isolated copy)" --allow-empty',
-      `git checkout -b ${escapeShell(branchName)}`,
-    ]
-      .filter(Boolean)
-      .join(' && ');
-
-    execSync(gitCommands, {
-      cwd: isolatedPath,
-      stdio: 'pipe',
-      shell: '/bin/bash',
-    });
+    await vcs.initIsolatedCopy(sourceDir, isolatedPath, branchName);
 
     return isolatedPath;
   }
@@ -1225,14 +1182,10 @@ class IsolationManager {
    * Check if directory is a git repository
    * @private
    */
-  _isGitRepo(dir) {
+  async _isVcsRepo(dir) {
     try {
-      execSync('git rev-parse --git-dir', {
-        cwd: dir,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      });
-      return true;
+      const vcs = await getVcs();
+      return await vcs.isRepo(dir);
     } catch {
       return false;
     }
@@ -1242,13 +1195,10 @@ class IsolationManager {
    * Get the git repository root for a directory
    * @private
    */
-  _getGitRoot(dir) {
+  async _getVcsRoot(dir) {
     try {
-      return execSync('git rev-parse --show-toplevel', {
-        cwd: dir,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      }).trim();
+      const vcs = await getVcs();
+      return await vcs.getRoot(dir);
     } catch {
       return null;
     }
@@ -1261,14 +1211,14 @@ class IsolationManager {
    * @param {string} workDir - Original working directory (must be a git repo)
    * @returns {{ path: string, branch: string, repoRoot: string }}
    */
-  createWorktreeIsolation(clusterId, workDir) {
-    if (!this._isGitRepo(workDir)) {
+  async createWorktreeIsolation(clusterId, workDir) {
+    if (!await this._isVcsRepo(workDir)) {
       throw new Error(
         `Worktree isolation requires a git repository. ${workDir} is not a git repo.`
       );
     }
 
-    const worktreeInfo = this.createWorktree(clusterId, workDir);
+    const worktreeInfo = await this.createWorktree(clusterId, workDir);
     this.worktrees.set(clusterId, worktreeInfo);
 
     console.log(`[IsolationManager] Created worktree isolation at ${worktreeInfo.path}`);
@@ -1283,13 +1233,13 @@ class IsolationManager {
    * @param {object} [options] - Cleanup options
    * @param {boolean} [options.preserveBranch=true] - Keep the branch after removing worktree
    */
-  cleanupWorktreeIsolation(clusterId, options = {}) {
+  async cleanupWorktreeIsolation(clusterId, options = {}) {
     const worktreeInfo = this.worktrees.get(clusterId);
     if (!worktreeInfo) {
       return; // No worktree to clean up
     }
 
-    this.removeWorktree(worktreeInfo, options);
+    await this.removeWorktree(worktreeInfo, options);
     this.worktrees.delete(clusterId);
 
     console.log(`[IsolationManager] Cleaned up worktree isolation for ${clusterId}`);
@@ -1301,8 +1251,8 @@ class IsolationManager {
    * @param {string} workDir - Original working directory
    * @returns {{ path: string, branch: string, repoRoot: string }}
    */
-  createWorktree(clusterId, workDir) {
-    const repoRoot = this._getGitRoot(workDir);
+  async createWorktree(clusterId, workDir) {
+    const repoRoot = await this._getVcsRoot(workDir);
     if (!repoRoot) {
       throw new Error(`Cannot find git root for ${workDir}`);
     }
@@ -1320,21 +1270,20 @@ class IsolationManager {
       fs.mkdirSync(parentDir, { recursive: true });
     }
 
+    const vcs = await getVcs();
+
     // Best-effort cleanup of stale worktree metadata and directory.
     // IMPORTANT: If a previous run deleted the directory without deregistering the worktree,
     // git may keep the branch "checked out" and block deletion/reuse.
     try {
-      execSync(`git worktree remove --force ${escapeShell(worktreePath)}`, {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      });
+      await vcs.worktreeRemove(worktreePath, repoRoot);
     } catch {
       // ignore
     }
     try {
-      execSync('git worktree prune', { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe' });
-    } catch {
+      await vcs.worktreePrune(repoRoot);
+    }
+    catch {
       // ignore
     }
     try {
@@ -1347,24 +1296,13 @@ class IsolationManager {
     for (let attempt = 0; attempt < 10; attempt++) {
       // Best-effort delete if branch exists and is not in use by another worktree.
       try {
-        execSync(`git branch -D ${escapeShell(branchName)}`, {
-          cwd: repoRoot,
-          encoding: 'utf8',
-          stdio: 'pipe',
-        });
+        await vcs.branchDelete(branchName, repoRoot);
       } catch {
         // ignore
       }
 
       try {
-        execSync(
-          `git worktree add -b ${escapeShell(branchName)} ${escapeShell(worktreePath)} HEAD`,
-          {
-            cwd: repoRoot,
-            encoding: 'utf8',
-            stdio: 'pipe',
-          }
-        );
+        await vcs.worktreeAdd(worktreePath, branchName, repoRoot);
         break;
       } catch (err) {
         const stderr = (
@@ -1378,7 +1316,7 @@ class IsolationManager {
         if (attempt < 9 && isBranchCollision) {
           branchName = `${baseBranchName}-${crypto.randomBytes(3).toString('hex')}`;
           try {
-            execSync('git worktree prune', { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe' });
+            await vcs.worktreePrune(repoRoot);
           } catch {
             // ignore
           }
@@ -1401,31 +1339,20 @@ class IsolationManager {
    * @param {object} [options] - Removal options
    * @param {boolean} [options.deleteBranch=false] - Also delete the branch
    */
-  removeWorktree(worktreeInfo, _options = {}) {
+  async removeWorktree(worktreeInfo, _options = {}) {
+    const vcs = await getVcs();
     // Remove the worktree (prefer git so metadata is cleaned up).
     try {
-      execSync(`git worktree remove --force ${escapeShell(worktreeInfo.path)}`, {
-        cwd: worktreeInfo.repoRoot,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      });
+      await vcs.worktreeRemove(worktreeInfo.path, worktreeInfo.repoRoot);
     } catch {
       // If git worktree metadata is stale, prune and retry once.
       try {
-        execSync('git worktree prune', {
-          cwd: worktreeInfo.repoRoot,
-          encoding: 'utf8',
-          stdio: 'pipe',
-        });
+        await vcs.worktreePrune(worktreeInfo.repoRoot);
       } catch {
         // ignore
       }
       try {
-        execSync(`git worktree remove --force ${escapeShell(worktreeInfo.path)}`, {
-          cwd: worktreeInfo.repoRoot,
-          encoding: 'utf8',
-          stdio: 'pipe',
-        });
+        await vcs.worktreeRemove(worktreeInfo.path, worktreeInfo.repoRoot);
       } catch {
         // Last resort: delete directory, then prune stale worktree entries.
         try {
@@ -1434,11 +1361,7 @@ class IsolationManager {
           // ignore
         }
         try {
-          execSync('git worktree prune', {
-            cwd: worktreeInfo.repoRoot,
-            encoding: 'utf8',
-            stdio: 'pipe',
-          });
+          await vcs.worktreePrune(worktreeInfo.repoRoot);
         } catch {
           // ignore
         }

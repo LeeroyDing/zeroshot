@@ -20,7 +20,7 @@ const {
 } = require('../lib/settings/claude-auth.js');
 const { loadSettings, getClaudeCommand } = require('../lib/settings.js');
 const { normalizeProviderName } = require('../lib/provider-names');
-const { detectGitContext } = require('../lib/git-remote-utils');
+const { getVcs } = require('../lib/vcs/factory');
 
 /**
  * Validation result
@@ -434,17 +434,17 @@ function validateDockerRequirement() {
   return errors;
 }
 
-function isGitRepository() {
+async function isVcsRepository() {
   try {
-    execSync('git rev-parse --git-dir', { stdio: 'pipe' });
+    await getVcs();
     return true;
   } catch {
     return false;
   }
 }
 
-function validateGitRequirement() {
-  if (isGitRepository()) {
+async function validateGitRequirement() {
+  if (await isVcsRepository()) {
     return [];
   }
 
@@ -468,7 +468,7 @@ function validateGitRequirement() {
  * @param {string} options.provider - Provider override
  * @returns {ValidationResult}
  */
-function runPreflight(options = {}) {
+async function runPreflight(options = {}) {
   const errors = [];
   const warnings = [];
 
@@ -502,8 +502,9 @@ function runPreflight(options = {}) {
         // Check provider authentication (abstracted per provider)
         // Use targetHost from URL input if provided, otherwise detect from git context
         // This ensures we check auth for the actual target, not the current repo
+        const vcs = await getVcs();
         const targetHost =
-          options.targetHost || detectGitContext(options.cwd || process.cwd())?.host;
+          options.targetHost || (await vcs.detectContext(options.cwd || process.cwd()))?.host;
         const authResult = ProviderClass.checkAuth(targetHost);
         if (!authResult.authenticated) {
           errors.push(
@@ -526,9 +527,10 @@ function runPreflight(options = {}) {
     let prGitContext;
     try {
       // Detect git platform (independent of issue provider)
-      platform = getPlatformForPR(options.cwd || process.cwd());
+      platform = await getPlatformForPR(options.cwd || process.cwd());
       // Get git context for hostname (needed for multi-instance auth checks)
-      prGitContext = detectGitContext(options.cwd || process.cwd());
+      const vcs = await getVcs();
+      prGitContext = await vcs.detectContext(options.cwd || process.cwd());
     } catch (error) {
       // If platform detection fails, show clear error
       errors.push(
@@ -581,7 +583,7 @@ function runPreflight(options = {}) {
 
   // 7. Check git repo (if required for worktree isolation)
   if (options.requireGit) {
-    errors.push(...validateGitRequirement());
+    errors.push(...await validateGitRequirement());
   }
 
   return {
@@ -600,8 +602,8 @@ function runPreflight(options = {}) {
  * @param {boolean} options.quiet - Suppress success messages
  * @param {string} options.provider - Provider override
  */
-function requirePreflight(options = {}) {
-  const result = runPreflight(options);
+async function requirePreflight(options = {}) {
+  const result = await runPreflight(options);
 
   // Print warnings regardless of success
   if (result.warnings.length > 0) {

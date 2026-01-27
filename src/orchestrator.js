@@ -39,6 +39,7 @@ const MessageBus = require('./message-bus');
 const Ledger = require('./ledger');
 const InputHelpers = require('./input-helpers');
 const { detectProvider } = require('./issue-providers');
+const { getVcs, detectVcs } = require('../lib/vcs/factory');
 const IsolationManager = require('./isolation-manager');
 const { generateName } = require('./name-generator');
 const configValidator = require('./config-validator');
@@ -732,7 +733,7 @@ class Orchestrator {
       let inputData;
       if (input.issue) {
         // Detect provider and fetch issue
-        const ProviderClass = detectProvider(
+        const ProviderClass = await detectProvider(
           input.issue,
           options.settings || {},
           options.forceProvider
@@ -762,8 +763,8 @@ class Orchestrator {
 
       // Detect git platform for --pr mode (independent of issue provider)
       if (options.autoPr) {
-        const { detectGitContext } = require('../lib/git-remote-utils');
-        const gitContext = detectGitContext(options.cwd);
+        const vcs = await getVcs();
+        const gitContext = await vcs.detectContext(options.cwd);
         cluster.gitPlatform = gitContext?.provider || null;
 
         if (cluster.gitPlatform) {
@@ -772,7 +773,7 @@ class Orchestrator {
       }
 
       // Inject git-pusher agent if --pr is set (replaces completion-detector)
-      this._applyAutoPrConfig(config, inputData, options);
+      await this._applyAutoPrConfig(config, inputData, options);
 
       // Inject workers instruction if --workers explicitly provided and > 1
       this._applyWorkerInstruction(config);
@@ -1210,7 +1211,7 @@ class Orchestrator {
       const workDir = options.cwd || process.cwd();
 
       isolationManager = new IsolationManager({});
-      worktreeInfo = isolationManager.createWorktreeIsolation(clusterId, workDir);
+      worktreeInfo = await isolationManager.createWorktreeIsolation(clusterId, workDir);
 
       this._log(`[Orchestrator] Starting cluster in worktree isolation mode`);
       this._log(`[Orchestrator] Worktree: ${worktreeInfo.path}`);
@@ -1220,7 +1221,7 @@ class Orchestrator {
     return { isolationManager, containerId, worktreeInfo };
   }
 
-  _applyAutoPrConfig(config, inputData, options) {
+  async _applyAutoPrConfig(config, inputData, options) {
     if (!options.autoPr) {
       return;
     }
@@ -1229,13 +1230,12 @@ class Orchestrator {
 
     // Detect git platform (independent of issue provider)
     const { getPlatformForPR } = require('./issue-providers');
-    const { detectGitContext } = require('../lib/git-remote-utils');
 
     let platform;
     try {
       // ALWAYS use git context, regardless of issue provider
       // This allows Jira issues in GitHub repos, etc.
-      platform = getPlatformForPR(options.cwd);
+      platform = await getPlatformForPR(options.cwd);
     } catch (error) {
       throw new Error(`--pr mode failed: ${error.message}`);
     }
@@ -1244,7 +1244,8 @@ class Orchestrator {
     // This catches cases like: running `zeroshot run https://gitlab.com/foo/bar/-/issues/1`
     // from a different repo directory
     let skipCloseIssue = false;
-    const gitContext = detectGitContext(options.cwd);
+    const vcs = await getVcs();
+    const gitContext = await vcs.detectContext(options.cwd);
     if (inputData.url && gitContext) {
       const issueHost = this._extractHostFromUrl(inputData.url);
       const gitHost = gitContext.host;
@@ -1265,13 +1266,8 @@ class Orchestrator {
     // Generate platform-specific git-pusher agent from template
     const { generateGitPusherAgent, isPlatformSupported } = require('./agents/git-pusher-template');
 
-    if (!isPlatformSupported(platform)) {
-      throw new Error(
-        `Platform '${platform}' does not support --pr mode. Supported: github, gitlab, azure-devops`
-      );
-    }
-
-    const gitPusherConfig = generateGitPusherAgent(platform);
+    const vcsType = await detectVcs(options.cwd);
+    const gitPusherConfig = generateGitPusherAgent(platform, vcsType);
 
     // Template replacement for issue context
     const issueRef = skipCloseIssue ? '' : `Closes #${inputData.number || 'unknown'}`;
@@ -1443,7 +1439,7 @@ class Orchestrator {
     // Note: Branch is preserved for potential PR creation / inspection
     if (cluster.worktree?.manager) {
       this._log(`[Orchestrator] Force removing worktree for ${clusterId}...`);
-      cluster.worktree.manager.cleanupWorktreeIsolation(clusterId, { preserveBranch: true });
+      await cluster.worktree.manager.cleanupWorktreeIsolation(clusterId, { preserveBranch: true });
       this._log(`[Orchestrator] Worktree removed, branch ${cluster.worktree.branch} preserved`);
     }
 

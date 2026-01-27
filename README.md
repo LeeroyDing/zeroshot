@@ -128,7 +128,7 @@ Zeroshot fixes this with isolated agents that check each other's work. Validator
 - **Repeatable workflows** - Task complexity determines agent count and model selection
 - **Accept/reject loop** - Rejections include actionable findings, not vague complaints
 - **Crash recovery** - All state persisted to SQLite; resume anytime
-- **Isolation modes** - None, git worktree, or Docker container
+- **Isolation modes** - None, worktree (git or jj), or Docker container
 - **Cost control** - Model ceilings prevent runaway API spend
 
 ## When to Use Zeroshot
@@ -156,7 +156,7 @@ zeroshot run feature.md               # Markdown file
 zeroshot run "Add dark mode"          # Inline text
 
 # Isolation
-zeroshot run 123 --worktree       # git worktree
+zeroshot run 123 --worktree       # worktree (git or jj)
 zeroshot run 123 --docker         # container
 
 # Automation (--ship implies --pr implies --worktree)
@@ -192,7 +192,7 @@ zeroshot purge
 ## Multi-Platform Issue Support
 
 Zeroshot works with **GitHub, GitLab, Jira, and Azure DevOps**. Just paste the issue URL or key.
-When working in a git repository, zeroshot automatically detects the issue provider from your git remote URL. No configuration needed!
+When working in a git or jj repository, zeroshot automatically detects the issue provider from your remote URL. No configuration needed!
 
 ```bash
 # GitHub
@@ -213,7 +213,7 @@ zeroshot run https://dev.azure.com/org/project/_workitems/edit/999
 
 **Requires**: CLI tools ([`gh`](https://cli.github.com/), [`glab`](https://gitlab.com/gitlab-org/cli), [`jira`](https://github.com/go-jira/jira), or [`az`](https://docs.microsoft.com/cli/azure/)) for the platform you use. See [issue-providers README](src/issue-providers/README.md) for setup and self-hosted instances.
 
-**Important for `--pr` mode**: Run zeroshot from the target repository directory. PRs are created on the git remote of your current directory. If you run from a different repo, zeroshot will warn you and skip the "Closes #X" reference (the PR is still created, but won't auto-close the issue).
+**Important for `--pr` mode**: Run zeroshot from the target repository directory. PRs are created on the remote of your current directory. If you run from a different repo, zeroshot will warn you and skip the "Closes #X" reference (the PR is still created, but won't auto-close the issue).
 
 ## Architecture
 
@@ -355,7 +355,7 @@ zeroshot resume cluster-bold-panther
 zeroshot run 123 --worktree
 ```
 
-Lightweight isolation using git worktree. Creates a separate working directory with its own branch. Auto-enabled with `--pr` and `--ship`.
+Lightweight isolation using worktree. Creates a separate working directory with its own branch. Auto-enabled with `--pr` and `--ship`.
 
 ### Docker Container
 
@@ -382,7 +382,7 @@ Full isolation in a fresh container. Your workspace stays untouched. Useful for 
 
 When using `--docker`, zeroshot mounts credential directories so agents can access provider CLIs and tools like AWS, Azure, and kubectl.
 
-**Default mounts**: `gh`, `git`, `ssh` (GitHub CLI, git config, SSH keys)
+**Default mounts**: `gh`, `git`, `ssh` (GitHub CLI, git/jj config, SSH keys)
 
 **Available presets**: `gh`, `git`, `ssh`, `aws`, `azure`, `kube`, `terraform`, `gcloud`, `claude`, `codex`, `gemini`
 
