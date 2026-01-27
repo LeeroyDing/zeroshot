@@ -45,6 +45,7 @@ const configValidator = require('./config-validator');
 const TemplateResolver = require('./template-resolver');
 const { loadSettings } = require('../lib/settings');
 const { normalizeProviderName } = require('../lib/provider-names');
+const StateSnapshotter = require('./state-snapshotter');
 const crypto = require('crypto');
 
 function applyModelOverride(agentConfig, modelOverride) {
@@ -290,6 +291,7 @@ class Orchestrator {
     };
 
     this.clusters.set(clusterId, cluster);
+    this._startSnapshotter(cluster);
     this._log(`[Orchestrator] Loaded cluster: ${clusterId} with ${agents.length} agents`);
 
     return cluster;
@@ -399,11 +401,36 @@ class Orchestrator {
     return agents;
   }
 
+  _startSnapshotter(cluster) {
+    if (cluster.snapshotter) {
+      cluster.snapshotter.start();
+      return;
+    }
+
+    const snapshotter = new StateSnapshotter({
+      messageBus: cluster.messageBus,
+      clusterId: cluster.id,
+    });
+    snapshotter.start();
+    cluster.snapshotter = snapshotter;
+  }
+
   /**
    * Ensure clusters file exists (required for file locking)
    * @private
    */
   _ensureClustersFile() {
+    if (!fs.existsSync(this.storageDir)) {
+      try {
+        fs.mkdirSync(this.storageDir, { recursive: true });
+      } catch (error) {
+        console.warn(
+          `[Orchestrator] Failed to create storage directory ${this.storageDir}: ${error.message}`
+        );
+        return null;
+      }
+    }
+
     const clustersFile = path.join(this.storageDir, 'clusters.json');
     if (!fs.existsSync(clustersFile)) {
       fs.writeFileSync(clustersFile, '{}');
@@ -423,6 +450,9 @@ class Orchestrator {
     }
 
     const clustersFile = this._ensureClustersFile();
+    if (!clustersFile) {
+      return;
+    }
     const lockfilePath = path.join(this.storageDir, 'clusters.json.lock');
     let release;
 
@@ -514,6 +544,14 @@ class Orchestrator {
       this._log(
         `[Orchestrator] Saved ${this.clusters.size} cluster(s), file now has ${Object.keys(existingClusters).length} total`
       );
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        console.warn(
+          `[Orchestrator] Skipping cluster save; storage directory missing: ${this.storageDir}`
+        );
+        return;
+      }
+      throw error;
     } finally {
       // Always release lock
       if (release) {
@@ -726,6 +764,7 @@ class Orchestrator {
     };
 
     this.clusters.set(clusterId, cluster);
+    this._startSnapshotter(cluster);
 
     try {
       // Fetch input (issue from provider, file, or text)
@@ -1387,6 +1426,10 @@ class Orchestrator {
       await agent.stop();
     }
 
+    if (cluster.snapshotter) {
+      cluster.snapshotter.stop();
+    }
+
     // Clean up isolation container if enabled
     // CRITICAL: Preserve workspace for resume capability - only delete on kill()
     if (cluster.isolation?.manager) {
@@ -1395,6 +1438,14 @@ class Orchestrator {
       );
       await cluster.isolation.manager.cleanup(clusterId, { preserveWorkspace: true });
       this._log(`[Orchestrator] Container stopped, workspace preserved`);
+    }
+
+    if (cluster.validatorIsolation?.manager) {
+      this._log(`[Orchestrator] Cleaning up validator isolation container for ${clusterId}...`);
+      await cluster.validatorIsolation.manager.cleanup(cluster.validatorIsolation.clusterId, {
+        preserveWorkspace: false,
+      });
+      cluster.validatorIsolation = null;
     }
 
     // Worktree cleanup on stop: preserve for resume capability
@@ -1430,6 +1481,10 @@ class Orchestrator {
       await agent.stop();
     }
 
+    if (cluster.snapshotter) {
+      cluster.snapshotter.stop();
+    }
+
     // Force remove isolation container AND workspace (full cleanup, no resume)
     if (cluster.isolation?.manager) {
       this._log(
@@ -1437,6 +1492,14 @@ class Orchestrator {
       );
       await cluster.isolation.manager.cleanup(clusterId, { preserveWorkspace: false });
       this._log(`[Orchestrator] Container and workspace removed`);
+    }
+
+    if (cluster.validatorIsolation?.manager) {
+      this._log(`[Orchestrator] Force removing validator isolation container for ${clusterId}...`);
+      await cluster.validatorIsolation.manager.cleanup(cluster.validatorIsolation.clusterId, {
+        preserveWorkspace: false,
+      });
+      cluster.validatorIsolation = null;
     }
 
     // Force remove worktree (full cleanup, no resume)
@@ -1533,6 +1596,7 @@ class Orchestrator {
 
     await this._ensureIsolationForResume(clusterId, cluster);
     this._ensureWorktreeForResume(clusterId, cluster);
+    this._startSnapshotter(cluster);
     await this._restartClusterAgents(cluster);
 
     const recentMessages = this._loadRecentMessages(cluster, clusterId, 50);
