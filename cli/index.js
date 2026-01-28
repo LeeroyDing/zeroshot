@@ -314,7 +314,7 @@ function buildDaemonEnv(options, clusterId, targetCwd) {
   };
 }
 
-function spawnDetachedCluster(options, clusterId) {
+async function spawnDetachedCluster(options, clusterId) {
   const { spawn } = require('child_process');
   printDetachedClusterStart(options, clusterId);
   const logFd = createDaemonLogFile(clusterId);
@@ -452,7 +452,7 @@ function applyModelOverrideToConfig(config, modelOverride, providerOverride, set
   console.log(chalk.dim(`Model override: ${modelOverride} (all agents)`));
 }
 
-function buildStartOptions({
+async function buildStartOptions({
   clusterId,
   options,
   settings,
@@ -2446,7 +2446,7 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps)
 
       if (shouldRunDetached(options)) {
         const clusterId = generateName('cluster');
-        spawnDetachedCluster(options, clusterId);
+        await spawnDetachedCluster(options, clusterId);
         return;
       }
 
@@ -2467,7 +2467,7 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps)
       const modelOverride = resolveModelOverride(options);
       applyModelOverrideToConfig(config, modelOverride, providerOverride, settings);
 
-      const startOptions = buildStartOptions({
+      const startOptions = await buildStartOptions({
         clusterId,
         options,
         settings,

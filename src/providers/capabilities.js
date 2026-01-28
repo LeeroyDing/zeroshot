@@ -37,6 +37,15 @@ const CAPABILITIES = {
     thinkingMode: true,
     reasoningEffort: true,
   },
+  acp: {
+    dockerIsolation: false,
+    worktreeIsolation: true,
+    mcpServers: true,
+    jsonSchema: true,
+    streamJson: true,
+    thinkingMode: true,
+    reasoningEffort: false,
+  },
 };
 
 function checkCapability(provider, capability) {

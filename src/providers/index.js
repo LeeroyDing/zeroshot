@@ -2,6 +2,7 @@ const AnthropicProvider = require('./anthropic');
 const OpenAIProvider = require('./openai');
 const GoogleProvider = require('./google');
 const OpencodeProvider = require('./opencode');
+const ACPProvider = require('./acp');
 const { normalizeProviderName } = require('../../lib/provider-names');
 
 const PROVIDERS = {
@@ -9,6 +10,7 @@ const PROVIDERS = {
   codex: OpenAIProvider,
   gemini: GoogleProvider,
   opencode: OpencodeProvider,
+  acp: ACPProvider,
 };
 
 function getProvider(name) {

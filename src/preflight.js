@@ -353,6 +353,38 @@ function validateCliProvider(command, title, detail, recovery) {
   return { errors, warnings: [] };
 }
 
+function validateAcpProvider() {
+  const settings = loadSettings();
+  const acpSettings = settings.providerSettings?.acp || {};
+  const errors = [];
+
+  if (acpSettings.transport === 'stdio' || !acpSettings.transport) {
+    const cmd = acpSettings.command?.split(' ')[0];
+    if (cmd && !commandExists(cmd)) {
+      errors.push(
+        formatError(
+          'ACP Agent command not available',
+          `Command "${cmd}" not installed`,
+          [
+            'Install the ACP agent CLI',
+            `Update settings: zeroshot settings set providerSettings.acp '{"command": "your-command"}'`,
+          ]
+        )
+      );
+    }
+  } else if (acpSettings.transport === 'http' && !acpSettings.url) {
+    errors.push(
+      formatError(
+        'ACP URL not configured',
+        'HTTP transport selected but no URL provided',
+        [`Update settings: zeroshot settings set providerSettings.acp '{"transport": "http", "url": "https://..."}'`]
+      )
+    );
+  }
+
+  return { errors, warnings: [] };
+}
+
 function validateProvider(providerName, options) {
   const validatorByProvider = {
     claude: () => validateClaudeProvider(options),
@@ -373,6 +405,7 @@ function validateProvider(providerName, options) {
         'Command "opencode" not installed',
         ['Install Opencode CLI: see https://opencode.ai', 'Then run: opencode --version']
       ),
+    acp: () => validateAcpProvider(),
   };
 
   const validator = validatorByProvider[providerName];
