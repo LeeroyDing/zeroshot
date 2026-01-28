@@ -11,6 +11,7 @@ authentication. Use each CLI's login flow or API key setup.
 | Codex    | Codex       | `npm install -g @openai/codex`             |
 | Gemini   | Gemini      | `npm install -g @google/gemini-cli`        |
 | Opencode | Opencode    | See https://opencode.ai                    |
+| ACP      | ACP Agent   | `npm install -g <your-acp-agent>`          |
 
 ## Selecting a Provider
 
@@ -50,6 +51,34 @@ Notes:
 
 - `reasoningEffort` applies to Codex and Opencode only.
 - `model` is still supported as a provider-specific escape hatch.
+
+## ACP Provider Setup
+
+The ACP provider allows Zeroshot to orchestrate any external agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com).
+
+### Configuration
+
+You must configure the transport and connection details.
+
+**Option A: Local Process (stdio)**
+Spawns an agent command directly.
+
+```bash
+zeroshot settings set providerSettings.acp '{"transport": "stdio", "command": "npx my-acp-agent"}'
+```
+
+**Option B: Remote Server (http)**
+Connects to an ACP server via HTTP/SSE.
+
+```bash
+zeroshot settings set providerSettings.acp '{"transport": "http", "url": "http://localhost:3000/sse"}'
+```
+
+### Usage
+
+```bash
+zeroshot run "Task description" --provider acp
+```
 
 ## Docker Isolation and Credentials
 
