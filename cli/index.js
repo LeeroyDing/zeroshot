@@ -234,10 +234,12 @@ function detectRunInput(inputArg) {
   return input;
 }
 
-function resolveProviderOverride(options, settings) {
-  return normalizeProviderName(
-    options.provider || process.env.ZEROSHOT_PROVIDER || settings.defaultProvider
-  );
+function resolveProviderOverride(options) {
+  const override = options.provider || process.env.ZEROSHOT_PROVIDER;
+  if (!override || (typeof override === 'string' && !override.trim())) {
+    return null;
+  }
+  return normalizeProviderName(override);
 }
 
 async function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
@@ -2437,7 +2439,7 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps)
       // Auto-detect input type
       const input = detectRunInput(inputArg);
       const settings = loadSettings();
-      const providerOverride = resolveProviderOverride(options, settings);
+      const providerOverride = resolveProviderOverride(options);
 
       // Preflight checks
       await runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
@@ -3003,7 +3005,7 @@ program
     try {
       // Try cluster first, then task (both use same ID format: "adjective-noun-number")
       const OrchestratorModule = require('../src/orchestrator');
-      const orchestrator = new OrchestratorModule();
+      const orchestrator = await OrchestratorModule.create();
 
       // Check if cluster exists
       const cluster = orchestrator.getCluster(id);

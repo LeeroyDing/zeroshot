@@ -108,15 +108,22 @@ function extractFromTextEvents(output, providerName) {
   const events = parseChunkWithProvider(provider, output);
 
   // Accumulate all text events
-  const textContent = events
-    .filter((e) => e.type === 'text')
-    .map((e) => e.text)
-    .join('');
+  const textEvents = events.filter((e) => e.type === 'text').map((e) => e.text);
+  const textContent = textEvents.join('');
 
   if (!textContent.trim()) return null;
 
   // Try parsing accumulated text as JSON
-  return extractDirectJson(textContent) || extractFromMarkdown(textContent);
+  const combined = extractDirectJson(textContent) || extractFromMarkdown(textContent);
+  if (combined) return combined;
+
+  for (let i = textEvents.length - 1; i >= 0; i--) {
+    const candidate = textEvents[i];
+    const parsed = extractDirectJson(candidate) || extractFromMarkdown(candidate);
+    if (parsed) return parsed;
+  }
+
+  return null;
 }
 
 /**
@@ -171,6 +178,26 @@ function extractDirectJson(text) {
 }
 
 /**
+ * Detects fatal standalone output lines that indicate no task output was produced.
+ * Only matches when the line itself is the fatal message (not when it appears inside JSON).
+ *
+ * @param {string} output - Raw output text
+ * @returns {boolean} True if a standalone fatal line is present
+ */
+function hasFatalStandaloneOutput(output) {
+  if (!output || typeof output !== 'string') return false;
+  const lines = output.split('\n');
+  for (const line of lines) {
+    const stripped = stripTimestamp(line).trim();
+    if (!stripped) continue;
+    if (/^(task not found|process terminated)\b/i.test(stripped)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Main extraction function - tries all strategies in priority order
  *
  * @param {string} output - Raw output from AI provider CLI
@@ -182,11 +209,6 @@ function extractJsonFromOutput(output, providerName = 'claude') {
 
   const trimmedOutput = output.trim();
   if (!trimmedOutput) return null;
-
-  // Check for fatal error indicators
-  if (trimmedOutput.includes('Task not found') || trimmedOutput.includes('Process terminated')) {
-    return null;
-  }
 
   // Strategy 1: Result wrapper (Claude format)
   const fromWrapper = extractFromResultWrapper(trimmedOutput);
@@ -204,6 +226,10 @@ function extractJsonFromOutput(output, providerName = 'claude') {
   const fromDirect = extractDirectJson(trimmedOutput);
   if (fromDirect) return fromDirect;
 
+  if (hasFatalStandaloneOutput(trimmedOutput)) {
+    return null;
+  }
+
   return null;
 }
 
@@ -214,4 +240,5 @@ module.exports = {
   extractFromMarkdown,
   extractDirectJson,
   stripTimestamp,
+  hasFatalStandaloneOutput,
 };
