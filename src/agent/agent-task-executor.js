@@ -548,10 +548,19 @@ async function spawnClaudeTask(agent, context) {
   // 2. PreToolUse hook (defense-in-depth) - activated by ZEROSHOT_BLOCK_ASK_USER env var
   ensureProviderHooks(agent, providerName);
   const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec);
+
+  let binary = ctPath;
+  let finalArgs = args;
+
+  if (ctPath.endsWith('index.js')) {
+    binary = process.execPath;
+    finalArgs = [ctPath, ...args];
+  }
+
   const taskId = await spawnTaskProcess({
     agent,
-    ctPath,
-    args,
+    ctPath: binary,
+    args: finalArgs,
     cwd,
     spawnEnv,
   });
@@ -697,6 +706,8 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
   const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
 
+  agent._log(`📋 Spawning: ${ctPath} ${args.join(' ')}`);
+
   return new Promise((resolve, reject) => {
     const proc = spawn(ctPath, args, {
       cwd,
@@ -788,11 +799,12 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
  */
 async function waitForTaskReady(agent, taskId, maxRetries = 10, delayMs = 200) {
   const ctPath = getClaudeTasksPath();
+  const cmd = ctPath.endsWith('index.js') ? `"${process.execPath}" "${ctPath}"` : `"${ctPath}"`;
 
   for (let i = 0; i < maxRetries; i++) {
     let exists = false;
     try {
-      const { stdout } = await exec(`${ctPath} status ${taskId}`, { timeout: 5000 });
+      const { stdout } = await exec(`${cmd} status ${taskId}`, { timeout: 5000 });
       exists = !stdout.includes('Task not found');
     } catch {
       // Timeout or error - task not ready yet
@@ -1188,9 +1200,14 @@ function followClaudeTaskLogs(agent, taskId) {
  * @returns {String} Path to zeroshot command
  */
 function getClaudeTasksPath() {
-  // Use zeroshot command (unified CLI)
-  return 'zeroshot'; // Assumes zeroshot is installed globally
+  const localPath = require('path').join(__dirname, '..', '..', 'cli', 'index.js');
+  if (require('fs').existsSync(localPath)) {
+    return localPath;
+  }
+  return 'zeroshot';
 }
+
+
 
 /**
  * Spawn claude-zeroshots inside Docker container (isolation mode)

@@ -38,9 +38,9 @@ function registerRepositoryHooks() {
     manager = new IsolationManager();
   });
 
-  afterEach(function () {
+  afterEach(async function () {
     try {
-      manager.cleanupWorktreeIsolation(testClusterId);
+      await manager.cleanupWorktreeIsolation(testClusterId);
     } catch {
       // Ignore cleanup errors
     }
@@ -69,8 +69,8 @@ function registerCreateWorktreeIsolationTests() {
 }
 
 function registerWorktreePathTest() {
-  it('should create worktree at expected path', function () {
-    const info = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should create worktree at expected path', async function () {
+    const info = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     assert(info.path, 'Should return worktree path');
     const expectedRoot = fs.realpathSync(path.join(os.tmpdir(), 'zeroshot-worktrees'));
@@ -85,8 +85,8 @@ function registerWorktreePathTest() {
 }
 
 function registerWorktreeBranchTest() {
-  it('should create branch with zeroshot/ prefix', function () {
-    const info = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should create branch with zeroshot/ prefix', async function () {
+    const info = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     assert(info.branch, 'Should return branch name');
     assert(
@@ -100,8 +100,8 @@ function registerWorktreeBranchTest() {
 }
 
 function registerWorktreeRepoRootTest() {
-  it('should return correct repoRoot', function () {
-    const info = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should return correct repoRoot', async function () {
+    const info = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     assert.strictEqual(
       fs.realpathSync(info.repoRoot),
@@ -112,8 +112,8 @@ function registerWorktreeRepoRootTest() {
 }
 
 function registerWorktreeGitRepoTest() {
-  it('should create working git repo in worktree', function () {
-    const info = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should create working git repo in worktree', async function () {
+    const info = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     const gitDir = execSync('git rev-parse --git-dir', {
       cwd: info.path,
@@ -125,8 +125,8 @@ function registerWorktreeGitRepoTest() {
 }
 
 function registerWorktreeContentTest() {
-  it('should have same content as source repo', function () {
-    const info = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should have same content as source repo', async function () {
+    const info = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     const worktreeTestFile = path.join(info.path, 'test.txt');
     assert(fs.existsSync(worktreeTestFile), 'test.txt should exist in worktree');
@@ -137,8 +137,8 @@ function registerWorktreeContentTest() {
 }
 
 function registerWorktreeBranchCheckoutTest() {
-  it('should be on the new branch', function () {
-    const info = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should be on the new branch', async function () {
+    const info = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     const currentBranch = execSync('git branch --show-current', {
       cwd: info.path,
@@ -150,8 +150,8 @@ function registerWorktreeBranchCheckoutTest() {
 }
 
 function registerWorktreeCommitTest() {
-  it('should allow commits in worktree', function () {
-    const info = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should allow commits in worktree', async function () {
+    const info = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     fs.writeFileSync(path.join(info.path, 'new-file.txt'), 'worktree content');
 
@@ -164,8 +164,8 @@ function registerWorktreeCommitTest() {
 }
 
 function registerWorktreeIsolationTest() {
-  it('should isolate changes from main repo', function () {
-    const info = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should isolate changes from main repo', async function () {
+    const info = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     fs.writeFileSync(path.join(info.path, 'isolated-file.txt'), 'isolated content');
     execSync('git add isolated-file.txt', { cwd: info.path, stdio: 'pipe' });
@@ -179,11 +179,11 @@ function registerWorktreeIsolationTest() {
 }
 
 function registerWorktreeNonGitTest() {
-  it('should throw for non-git directory', function () {
+  it('should throw for non-git directory', async function () {
     const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'non-git-'));
 
     try {
-      manager.createWorktreeIsolation('test-fail', nonGitDir);
+      await manager.createWorktreeIsolation('test-fail', nonGitDir);
       assert.fail('Should throw for non-git directory');
     } catch (err) {
       assert(err.message.includes('git repository'), `Error should mention git: ${err.message}`);
@@ -194,15 +194,15 @@ function registerWorktreeNonGitTest() {
 }
 
 function registerWorktreeCleanupBeforeCreateTest() {
-  it('should clean up existing worktree before creating', function () {
-    const info1 = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should clean up existing worktree before creating', async function () {
+    const info1 = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
     const path1 = info1.path;
 
     fs.writeFileSync(path.join(path1, 'marker.txt'), 'first run');
 
     manager.worktrees.delete(testClusterId);
 
-    const info2 = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+    const info2 = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     assert(
       !fs.existsSync(path.join(info2.path, 'marker.txt')),
@@ -222,26 +222,26 @@ function registerCleanupWorktreeIsolationTests() {
 }
 
 function registerCleanupWorktreeDirectoryTest() {
-  it('should remove worktree directory', function () {
-    const info = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should remove worktree directory', async function () {
+    const info = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
     const worktreePath = info.path;
 
     assert(fs.existsSync(worktreePath), 'Worktree should exist before cleanup');
 
-    manager.cleanupWorktreeIsolation(testClusterId);
+    await manager.cleanupWorktreeIsolation(testClusterId);
 
     assert(!fs.existsSync(worktreePath), 'Worktree directory should be removed');
   });
 }
 
 function registerCleanupWorktreeTrackingTest() {
-  it('should remove worktree from git tracking', function () {
-    manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should remove worktree from git tracking', async function () {
+    await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     const beforeList = execSync('git worktree list', { cwd: testRepoDir, encoding: 'utf8' });
     assert(beforeList.includes(testClusterId), 'Worktree should be tracked before cleanup');
 
-    manager.cleanupWorktreeIsolation(testClusterId);
+    await manager.cleanupWorktreeIsolation(testClusterId);
 
     const afterList = execSync('git worktree list', { cwd: testRepoDir, encoding: 'utf8' });
     assert(!afterList.includes(testClusterId), 'Worktree should not be tracked after cleanup');
@@ -249,11 +249,11 @@ function registerCleanupWorktreeTrackingTest() {
 }
 
 function registerCleanupWorktreeBranchTest() {
-  it('should preserve branch by default', function () {
-    const info = manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should preserve branch by default', async function () {
+    const info = await manager.createWorktreeIsolation(testClusterId, testRepoDir);
     const branchName = info.branch;
 
-    manager.cleanupWorktreeIsolation(testClusterId);
+    await manager.cleanupWorktreeIsolation(testClusterId);
 
     const branches = execSync('git branch --list', { cwd: testRepoDir, encoding: 'utf8' });
     assert(branches.includes(branchName), 'Branch should be preserved after cleanup');
@@ -261,18 +261,18 @@ function registerCleanupWorktreeBranchTest() {
 }
 
 function registerCleanupWorktreeIdempotentTest() {
-  it('should be idempotent (no error on double cleanup)', function () {
-    manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should be idempotent (no error on double cleanup)', async function () {
+    await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
-    manager.cleanupWorktreeIsolation(testClusterId);
+    await manager.cleanupWorktreeIsolation(testClusterId);
 
-    manager.cleanupWorktreeIsolation(testClusterId);
+    await manager.cleanupWorktreeIsolation(testClusterId);
   });
 }
 
 function registerCleanupWorktreeMissingTest() {
-  it('should not error for non-existent worktree', function () {
-    manager.cleanupWorktreeIsolation('non-existent-cluster-xyz');
+  it('should not error for non-existent worktree', async function () {
+    await manager.cleanupWorktreeIsolation('non-existent-cluster-xyz');
   });
 }
 
@@ -285,8 +285,8 @@ function registerGetWorktreeInfoTests() {
 }
 
 function registerGetWorktreeInfoAfterCreateTest() {
-  it('should return worktree info after creation', function () {
-    manager.createWorktreeIsolation(testClusterId, testRepoDir);
+  it('should return worktree info after creation', async function () {
+    await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
     const info = manager.getWorktreeInfo(testClusterId);
 
@@ -306,9 +306,9 @@ function registerGetWorktreeInfoMissingTest() {
 }
 
 function registerGetWorktreeInfoAfterCleanupTest() {
-  it('should return undefined after cleanup', function () {
-    manager.createWorktreeIsolation(testClusterId, testRepoDir);
-    manager.cleanupWorktreeIsolation(testClusterId);
+  it('should return undefined after cleanup', async function () {
+    await manager.createWorktreeIsolation(testClusterId, testRepoDir);
+    await manager.cleanupWorktreeIsolation(testClusterId);
 
     const info = manager.getWorktreeInfo(testClusterId);
 
@@ -318,10 +318,10 @@ function registerGetWorktreeInfoAfterCleanupTest() {
 
 function registerWorktreePerformanceTests() {
   describe('Performance', function () {
-    it('should create worktree in under 1 second', function () {
+    it('should create worktree in under 1 second', async function () {
       const startTime = Date.now();
 
-      manager.createWorktreeIsolation(testClusterId, testRepoDir);
+      await manager.createWorktreeIsolation(testClusterId, testRepoDir);
 
       const elapsed = Date.now() - startTime;
 

@@ -1303,7 +1303,7 @@ class Orchestrator {
     }
 
     // Generate platform-specific git-pusher agent from template
-    const { generateGitPusherAgent, isPlatformSupported } = require('./agents/git-pusher-template');
+    const { generateGitPusherAgent } = require('./agents/git-pusher-template');
 
     const vcsType = await detectVcs(options.cwd);
     const gitPusherConfig = generateGitPusherAgent(platform, vcsType);

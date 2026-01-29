@@ -7,6 +7,7 @@
 
 const { spawn } = require('child_process');
 const { Writable, Readable } = require('stream');
+const fs = require('fs/promises');
 
 async function main() {
   const { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } = await import('@agentclientprotocol/sdk');
@@ -38,15 +39,14 @@ async function main() {
   const client = {
     requestPermission: async (params) => {
       process.stderr.write(`[BRIDGE] Permission requested: ${params.toolCall.title}\n`);
-      return { outcome: { outcome: 'selected', optionId: params.options[0].optionId } };
+      const allowOption = params.options.find(o => o.kind === 'allow') || params.options[0];
+      await Promise.resolve(); // Satisfy require-await
+      return { outcome: { outcome: 'selected', optionId: allowOption.optionId } };
     },
     sessionUpdate: async (params) => {
       const update = params.update;
-      process.stderr.write(`[BRIDGE] Update received: ${update.sessionUpdate}\n`);
-      
       if (update.sessionUpdate === 'agent_message_chunk') {
         if (update.content.type === 'text') {
-           // Output to Zeroshot stdout
            process.stdout.write(JSON.stringify({
              type: 'text',
              text: update.content.text
@@ -55,9 +55,49 @@ async function main() {
       } else if (update.sessionUpdate === 'agent_thought_chunk') {
         process.stderr.write(`[THOUGHT] ${update.content.text || ''}\n`);
       }
+      await Promise.resolve(); // Satisfy require-await
     },
-    writeTextFile: async () => ({}),
-    readTextFile: async () => ({ content: '' }),
+    writeTextFile: async (params) => {
+      process.stderr.write(`[BRIDGE] Writing file: ${params.path}\n`);
+      try {
+        await fs.writeFile(params.path, params.content, 'utf8');
+        return {};
+      } catch (err) {
+        throw new Error(`Failed to write file: ${err.message}`);
+      }
+    },
+    readTextFile: async (params) => {
+      process.stderr.write(`[BRIDGE] Reading file: ${params.path}\n`);
+      try {
+        const content = await fs.readFile(params.path, 'utf8');
+        return { content };
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+            throw new Error(`File not found: ${params.path}`);
+        }
+        throw new Error(`Failed to read file: ${err.message}`);
+      }
+    },
+    listDirectory: async (params) => {
+      process.stderr.write(`[BRIDGE] Listing directory: ${params.path}\n`);
+      try {
+        const entries = await fs.readdir(params.path, { withFileTypes: true });
+        return {
+          entries: entries.map(e => ({
+            name: e.name,
+            isDirectory: e.isDirectory(),
+            isFile: e.isFile(),
+            isSymlink: e.isSymbolicLink()
+          }))
+        };
+      } catch (err) {
+        throw new Error(`Failed to list directory: ${err.message}`);
+      }
+    },
+    getCwd: async () => {
+        await Promise.resolve();
+        return { cwd: process.cwd() };
+    }
   };
 
   const stream = ndJsonStream(input, output);
@@ -68,7 +108,14 @@ async function main() {
 `);
     await connection.initialize({
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: {},
+      clientCapabilities: {
+        fs: {
+            readTextFile: true,
+            writeTextFile: true,
+            listDirectory: true,
+            getCwd: true
+        }
+      },
     });
 
     process.stderr.write(`[BRIDGE] Creating session...
@@ -78,7 +125,7 @@ async function main() {
       mcpServers: [] 
     });
     
-    process.stderr.write(`[BRIDGE] Sending prompt: ${promptText.slice(0, 50)}...
+    process.stderr.write(`[BRIDGE] Sending prompt...
 `);
     const result = await connection.prompt({
       sessionId: session.sessionId,
@@ -87,17 +134,12 @@ async function main() {
 
     process.stderr.write(`[BRIDGE] Prompt complete. Reason: ${result.stopReason}\n`);
 
-    // Give it a second to flush any remaining updates
-    await new Promise(r => setTimeout(r, 1000));
-
+    await new Promise(r => setTimeout(r, 500));
     agentProcess.kill();
     process.exit(0);
     
   } catch (error) {
     process.stderr.write(`[BRIDGE] Error: ${error.message}\n`);
-    if (error.data) {
-      process.stderr.write(`[BRIDGE] Data: ${JSON.stringify(error.data)}\n`);
-    }
     agentProcess.kill();
     process.exit(1);
   }

@@ -179,6 +179,7 @@ describe('modelRules validation', function () {
         {
           id: 'worker',
           role: 'impl',
+          provider: 'claude',
           triggers: [{ topic: 'A' }],
           modelRules: [{ iterations: 'all', model: 'gpt4' }],
         },

@@ -198,9 +198,9 @@ describe('Azure DevOps Provider', () => {
   });
 
   describe('_parseIdentifier', () => {
-    it('parses standard Azure DevOps URL', () => {
+    it('parses standard Azure DevOps URL', async () => {
       const provider = new AzureDevOpsProvider();
-      const result = provider._parseIdentifier(
+      const result = await provider._parseIdentifier(
         'https://dev.azure.com/org/proj/_workitems/edit/123',
         {}
       );
@@ -209,9 +209,9 @@ describe('Azure DevOps Provider', () => {
       expect(result.workItemId).to.equal('123');
     });
 
-    it('parses URL with mixed case project name', () => {
+    it('parses URL with mixed case project name', async () => {
       const provider = new AzureDevOpsProvider();
-      const result = provider._parseIdentifier(
+      const result = await provider._parseIdentifier(
         'https://dev.azure.com/wtsgroup/PlayGroundAI/_workitems/edit/2462',
         {}
       );
@@ -220,9 +220,9 @@ describe('Azure DevOps Provider', () => {
       expect(result.workItemId).to.equal('2462');
     });
 
-    it('parses URL with URL-encoded project name', () => {
+    it('parses URL with URL-encoded project name', async () => {
       const provider = new AzureDevOpsProvider();
-      const result = provider._parseIdentifier(
+      const result = await provider._parseIdentifier(
         'https://dev.azure.com/org/My%20Project/_workitems/edit/456',
         {}
       );
@@ -231,9 +231,9 @@ describe('Azure DevOps Provider', () => {
       expect(result.workItemId).to.equal('456');
     });
 
-    it('parses legacy Visual Studio URL', () => {
+    it('parses legacy Visual Studio URL', async () => {
       const provider = new AzureDevOpsProvider();
-      const result = provider._parseIdentifier(
+      const result = await provider._parseIdentifier(
         'https://myorg.visualstudio.com/myproject/_workitems/edit/789',
         {}
       );
@@ -384,45 +384,45 @@ describe('Provider Auth Interface', () => {
 });
 
 describe('detectProvider', () => {
-  it('force flag takes precedence', () => {
-    const ProviderClass = detectProvider('123', {}, 'gitlab');
+  it('force flag takes precedence', async () => {
+    const ProviderClass = await detectProvider('123', {}, 'gitlab');
     expect(ProviderClass).to.equal(GitLabProvider);
   });
 
-  it('detects GitHub by URL', () => {
-    const ProviderClass = detectProvider('https://github.com/org/repo/issues/123', {});
+  it('detects GitHub by URL', async () => {
+    const ProviderClass = await detectProvider('https://github.com/org/repo/issues/123', {});
     expect(ProviderClass).to.equal(GitHubProvider);
   });
 
-  it('detects GitLab by URL', () => {
-    const ProviderClass = detectProvider('https://gitlab.com/org/repo/-/issues/123', {});
+  it('detects GitLab by URL', async () => {
+    const ProviderClass = await detectProvider('https://gitlab.com/org/repo/-/issues/123', {});
     expect(ProviderClass).to.equal(GitLabProvider);
   });
 
-  it('detects Jira by key', () => {
-    const ProviderClass = detectProvider('PROJ-123', {});
+  it('detects Jira by key', async () => {
+    const ProviderClass = await detectProvider('PROJ-123', {});
     expect(ProviderClass).to.equal(JiraProvider);
   });
 
-  it('detects Azure DevOps by URL', () => {
-    const ProviderClass = detectProvider('https://dev.azure.com/org/proj/_workitems/edit/123', {});
+  it('detects Azure DevOps by URL', async () => {
+    const ProviderClass = await detectProvider('https://dev.azure.com/org/proj/_workitems/edit/123', {});
     expect(ProviderClass).to.equal(AzureDevOpsProvider);
   });
 
-  it('defaults to GitHub for bare numbers (no git context)', () => {
+  it('defaults to GitHub for bare numbers (no git context)', async () => {
     // Pass null gitContext to test fallback behavior without git remote influence
-    const ProviderClass = detectProvider('123', {}, null, null);
+    const ProviderClass = await detectProvider('123', {}, null, null);
     expect(ProviderClass).to.equal(GitHubProvider);
   });
 
-  it('uses defaultIssueSource setting (no git context)', () => {
+  it('uses defaultIssueSource setting (no git context)', async () => {
     // Pass null gitContext to test settings-based detection without git remote influence
-    const ProviderClass = detectProvider('123', { defaultIssueSource: 'gitlab' }, null, null);
+    const ProviderClass = await detectProvider('123', { defaultIssueSource: 'gitlab' }, null, null);
     expect(ProviderClass).to.equal(GitLabProvider);
   });
 
-  it('returns null for unmatched input', () => {
-    const ProviderClass = detectProvider('not-an-issue', {});
+  it('returns null for unmatched input', async () => {
+    const ProviderClass = await detectProvider('not-an-issue', {});
     expect(ProviderClass).to.be.null;
   });
 });

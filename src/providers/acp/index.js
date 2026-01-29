@@ -37,20 +37,16 @@ class ACPProvider extends BaseProvider {
     };
   }
 
-  buildCommand(prompt, options) {
+  buildCommand(prompt, _options) {
     // Get settings to find the configured ACP agent command
     const { loadSettings } = require('../../../lib/settings');
     const settings = loadSettings();
     const acpSettings = settings.providerSettings?.acp || this.getDefaultSettings();
-    
+
     const bridgePath = this.getCliPath();
     const nodePath = process.execPath;
 
-    const args = [
-      bridgePath,
-      '--prompt', prompt,
-      '--transport', acpSettings.transport || 'stdio',
-    ];
+    const args = [bridgePath, '--prompt', prompt, '--transport', acpSettings.transport || 'stdio'];
 
     if (acpSettings.transport === 'stdio') {
       args.push('--command', acpSettings.command);

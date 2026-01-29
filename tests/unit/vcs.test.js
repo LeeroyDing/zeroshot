@@ -4,7 +4,7 @@ const proxyquire = require('proxyquire');
 
 describe('VCS Abstraction Layer', () => {
   let execSyncStub;
-  let jj, git;
+  let jj;
 
   beforeEach(() => {
     execSyncStub = sinon.stub();
@@ -30,13 +30,17 @@ describe('VCS Abstraction Layer', () => {
     });
 
     it('getRoot should return the root of the repo', async () => {
-      execSyncStub.withArgs('jj root', { cwd: process.cwd(), encoding: 'utf8' }).returns('/path/to/repo\n');
+      execSyncStub
+        .withArgs('jj root', { cwd: process.cwd(), encoding: 'utf8' })
+        .returns('/path/to/repo\n');
       const root = await jj.getRoot();
       assert.strictEqual(root, '/path/to/repo');
     });
 
     it('getRemoteUrl should return the remote url', async () => {
-      execSyncStub.withArgs('jj git remote url origin', { encoding: 'utf8' }).returns('https://github.com/org/repo.git\n');
+      execSyncStub
+        .withArgs('jj git remote url origin', { encoding: 'utf8' })
+        .returns('https://github.com/org/repo.git\n');
       const url = await jj.getRemoteUrl('origin');
       assert.strictEqual(url, 'https://github.com/org/repo.git');
     });
